@@ -85,15 +85,21 @@ async def send_file_loop(path: Path, reader: aio.StreamReader, writer: aio.Strea
     filename = filename.decode().rstrip()
     filename = f'{path.name}/{filename}'
 
+    tot_bytes = 0
     should_send = True
+
     while should_send:
         await send_file(filename, writer, log)
-        ack = await reader.readline()
-        should_send = ack.decode().strip() != defs.SUCCESS
+        amnt_read = await reader.readline()
+        amnt_read = int(amnt_read.decode().strip())
+        tot_bytes += amnt_read
+
+        success = await reader.readline()
+        should_send = success.decode().strip() != defs.SUCCESS
 
     elapsed = await reader.readline()
     elapsed = float(elapsed.decode().strip())
-    log.debug(f'transfer time of {filename} was {elapsed:.5f} secs')
+    log.debug(f'transfer of {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs')
 
 
 

@@ -1,3 +1,4 @@
+from typing import Tuple
 from argparse import ArgumentParser
 from pathlib import Path
 from time import time
@@ -8,7 +9,6 @@ import hashlib
 import logging
 
 import serverbase as defs
-
 
 
 CLIENT_PROMPT = """\
@@ -197,29 +197,37 @@ async def receive_file_loop(filename: str, path: Path, reader: aio.StreamReader,
             writer.write(f'{defs.RETRY}\n'.encode())
             await writer.drain()
 
-        got_file = await receive_file(f'{path.name}/{filename}', reader)
+        got_file, byte_amnt = await receive_file(f'{path.name}/{filename}', reader)
         num_tries += 1
+
+        writer.write(f'{byte_amnt}\n'.encode())
+        await writer.drain()
     
     writer.write(f'{defs.SUCCESS}\n'.encode())
     await writer.drain()
 
 
 
-async def receive_file(filepath: str, reader: aio.StreamReader) -> bool:
+async def receive_file(filepath: str, reader: aio.StreamReader) -> Tuple[bool, int]:
     """ Used by the client side to download and verify correctness of download"""
+    checksum_passed = False
+    total_bytes = 0
+
     # expect the checksum to be sent first
     checksum = await checked_readline(reader)
     checksum = checksum.decode().strip()
-    checksum_passed = False
 
     with open(filepath, 'w+b') as f: # overrides existing
         while True:
             chunk = await checked_read(reader, defs.CHUNK_SIZE)
             f.write(chunk)
+            total_bytes += len(chunk)
             if len(chunk) < defs.CHUNK_SIZE:
                 break
 
+        logging.info(f'read {(total_bytes / 1000):.2f} KB')
         f.seek(0)
+
         local_checksum = hashlib.md5()
         for line in f:
             local_checksum.update(line)
@@ -231,7 +239,7 @@ async def receive_file(filepath: str, reader: aio.StreamReader) -> bool:
         else:
             logging.error("checksum failed")
 
-    return checksum_passed
+    return (checksum_passed, total_bytes)
 
 
 
