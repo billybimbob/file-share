@@ -1,4 +1,4 @@
-from socket import gethostname
+import socket
 import asyncio as aio
 import hashlib
 
@@ -6,42 +6,67 @@ from pathlib import Path
 import argparse
 import logging
 
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Dict
 
 
+SERVER_PROMPT = """
+1. List files on server
+2. Delete a file
+3. Kill Server
+Select an Option: 
+"""
 
 #region Server functions
 
+async def server_session(path: Path):
+    while option := input(SERVER_PROMPT):
+        if option == '1':
+            pass
+        elif option == '2':
+            pass
+        else:
+            break
+
+
 async def server_connection(reader: aio.StreamReader, writer: aio.StreamWriter, path: Path):
     """Callback called for the server wheneven a connection is established with a client"""
-    remote = writer.get_extra_info('peername')
-    logging.debug(f"connected to {remote}")
+    addr = writer.get_extra_info('peername')
+    remote = socket.gethostbyaddr(addr[0])
+
+    log = logging.getLogger(remote[0])
+    default_logger(log)
+
+    log.debug(f"connected to {remote}")
 
     try:
-        while option := await reader.readuntil():
-            option = option.decode().strip()
-            logging.debug(f'got {option=}')
+        while request := await reader.readuntil():
+            request = request.decode().strip()
 
-            if option == '1':
-                logging.debug("listing dir")
-                await list_dir(path, writer)
-            elif option == '2':
-                logging.debug("fetching file")
+            if request == '1':
+                log.debug("listing dir")
                 await list_dir(path, writer)
 
-                logging.debug("waiting for selected file")
+            elif request == '2':
+                await list_dir(path, writer)
+                log.debug("waiting for selected file")
                 filename = await reader.readuntil()
                 filename = filename.decode().rstrip()
-                await send_file(filename, writer)
+                await send_file(f'{path.name}/{filename}', writer, log)
+
             else:
                 break
 
-    except Exception as e:
-        logging.error(e)
+    except EOFError:
+        pass
+
+    except IOError as e:
+        log.error(e)
+        writer.write(str(e).encode())
 
     finally:
-        logging.debug('ending connection')
-        writer.close()
+        log.debug('ending connection')
+        writer.write_eof()
+        await writer.drain()
         await writer.wait_closed()
 
 
@@ -52,17 +77,17 @@ def path_connection(path: Path) -> Callable[[aio.StreamReader, aio.StreamReader]
 
 
 
-async def send_file(filename: str, writer: aio.StreamWriter):
+async def send_file(filepath: str, writer: aio.StreamWriter, log: logging.Logger):
     """Used by server side to send file contents to a given client"""
-    logging.debug(f'trying to send file {filename}')
+    log.debug(f'trying to send file {filepath}')
 
-    with open(filename, 'rb') as f:
+    with open(filepath, 'rb') as f:
         checksum = hashlib.md5()
         for line in f:
             checksum.update(line)
         checksum = checksum.hexdigest()
 
-        logging.info(f'checksum of: {checksum}')
+        log.info(f'checksum of: {checksum}')
 
         writer.write(f'{checksum}\n'.encode())
         await writer.drain()
@@ -85,18 +110,23 @@ async def list_dir(directory: Path, writer: aio.StreamWriter):
 
 async def start_stream(port: int, path: Path):
     """Switch to convert the command args to a given server or client"""
-    host = gethostname() # should be loopback
+    host = socket.gethostname() # should be loopback
+
     server = await aio.start_server(path_connection(path), host=host, port=port)
     async with server:
         addr = server.sockets[0].getsockname()
         logging.debug(f'created server on {addr}, listening for clients')
-        # todo: better way to stop server
+
+        # aio.create_task(server_session(path))
         await server.serve_forever()
  
 
+def default_logger(log: logging.Logger):
+    log.setLevel(logging.DEBUG)
+
 
 if __name__ == "__main__":
-    logging.getLogger().setLevel(logging.DEBUG)
+    default_logger(logging.getLogger())
 
     args = argparse.ArgumentParser("creates a server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
@@ -107,4 +137,9 @@ if __name__ == "__main__":
 
     # todo: account for config
     path = Path(f'./{args.dir}') # ensure relative path
-    aio.run(start_stream(args.port, path))
+    path.mkdir(exist_ok=True)
+
+    try:
+        aio.run(start_stream(args.port, path))
+    except KeyboardInterrupt:
+        logging.debug("server is stopped")

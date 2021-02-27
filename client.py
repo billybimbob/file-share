@@ -6,23 +6,37 @@ from pathlib import Path
 import argparse
 import logging
 
-from typing import Callable, Awaitable
-
 
 CHUNK_SIZE = 1024
-
-OPTION_PROMPT = """
+CLIENT_PROMPT = """
 1. List files on server
 2. Download file
+3. Exit
 Select an Option: """
 
 #region Client functions
+    
+async def checked_readline(reader: aio.StreamReader):
+    res = await reader.readline()
+    if reader.at_eof():
+        raise RuntimeError(res.decode())
+    else:
+        return res
 
-async def client_connection(reader: aio.StreamReader, writer: aio.StreamWriter):
+
+async def checked_read(reader: aio.StreamReader, n: int):
+    res = await reader.read(n)
+    if reader.at_eof():
+        raise RuntimeError(res.decode())
+    else:
+        return res
+
+
+async def client_session(reader: aio.StreamReader, writer: aio.StreamWriter, path: Path):
     """Procedure on how the client interacts with the server"""
     logging.debug('connected client')
 
-    while option := input(OPTION_PROMPT):
+    while option := input(CLIENT_PROMPT):
         if option == '1':
             writer.write(f'{option}\n'.encode())
             await writer.drain()
@@ -53,24 +67,25 @@ async def client_connection(reader: aio.StreamReader, writer: aio.StreamWriter):
             writer.write(f'{filename}\n'.encode())
             await writer.drain()
 
-            await receive_file(filename, reader)
+            await receive_file(f'{path.name}/{filename}', reader)
 
         else:
             break
 
 
 
-async def receive_file(filename: str, reader: aio.StreamReader):
+async def receive_file(filepath: str, reader: aio.StreamReader):
     """ Used by the client side to download and verify correctness of download"""
     # expect the checksum to be sent first
-    checksum = await reader.readuntil()
-    checksum = checksum.decode()
-    logging.debug(f'got checksum {checksum}')
+    checksum = await checked_readline(reader)
+    checksum = checksum.decode().strip()
 
-    with open(filename, 'w+b') as f: # overrides existing
-        while chunk := await reader.readline():
+    with open(filepath, 'w+b') as f: # overrides existing
+        while True:
+            chunk = await checked_read(reader, CHUNK_SIZE)
             f.write(chunk)
-            logging.debug(f'wrote {len(chunk)} bytes')
+            if len(chunk) < CHUNK_SIZE:
+                break
 
         f.seek(0)
         local_checksum = hashlib.md5()
@@ -89,7 +104,7 @@ async def receive_file(filename: str, reader: aio.StreamReader):
 
 
 async def receive_dirs(reader: aio.StreamReader) -> str:
-    file_names = await reader.read(CHUNK_SIZE)
+    file_names = await checked_read(reader, CHUNK_SIZE)
     file_names = file_names.decode()
     return file_names
 
@@ -102,10 +117,10 @@ async def start_stream(port: int, path: Path):
     host = gethostname() # should be loopback
     try:
         reader, writer = await aio.open_connection(host, port)
-        await client_connection(reader, writer)
+        await client_session(reader, writer, path)
 
     except Exception as e:
-        logging.error(f"connection error: {e}")
+        logging.error(f"connection error {e}")
 
     finally:
         logging.debug('ending connection')
@@ -127,4 +142,6 @@ if __name__ == "__main__":
 
     # todo: account for config
     path = Path(f'./{args.dir}') # ensure relative path
+    path.mkdir(exist_ok=True)
+
     aio.run(start_stream(args.port, path))
