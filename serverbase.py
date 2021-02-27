@@ -8,6 +8,8 @@ CHUNK_SIZE = 1024
 
 GET_FILES = 'get_files_list'
 DOWNLOAD = 'download'
+SUCCESS = 'success'
+RETRY = 'retry'
 
 #endregion
 

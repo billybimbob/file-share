@@ -1,7 +1,6 @@
 from typing import Callable, Awaitable, Dict
 from argparse import ArgumentParser
 from pathlib import Path
-from time import time
 
 import socket
 import asyncio as aio
@@ -39,8 +38,8 @@ async def server_session(direct: Path):
 
 async def server_connection(reader: aio.StreamReader, writer: aio.StreamWriter, path: Path):
     """Callback called for the server wheneven a connection is established with a client"""
-    addr = writer.get_extra_info('peername')
-    remote = socket.gethostbyaddr(addr[0])
+    addr, _, _, _ = writer.get_extra_info('peername')
+    remote = socket.gethostbyaddr(addr)
 
     log = logging.getLogger(remote[0])
     default_logger(log)
@@ -55,17 +54,20 @@ async def server_connection(reader: aio.StreamReader, writer: aio.StreamWriter, 
                 await list_dir(path, writer)
 
             elif request == defs.DOWNLOAD:
-                await list_dir(path, writer)
                 log.debug("waiting for selected file")
-
                 filename = await reader.readuntil()
                 filename = filename.decode().rstrip()
-                filepath = f'{path.name}/{filename}'
+                filename = f'{path.name}/{filename}'
 
-                start_time = time()
-                await send_file(filepath, writer, log)
-                elapsed = time() - start_time
-                log.debug(f'transfer time of {filepath} was {elapsed:.5f} secs')
+                should_send = True
+                while should_send:
+                    await send_file(filename, writer, log)
+                    ack = await reader.readline()
+                    should_send = ack.decode().strip() != defs.SUCCESS
+
+                elapsed = await reader.readline()
+                elapsed = float(elapsed.decode().strip())
+                log.debug(f'transfer time of {filename} was {elapsed:.5f} secs')
 
             else:
                 break
@@ -76,12 +78,11 @@ async def server_connection(reader: aio.StreamReader, writer: aio.StreamWriter, 
     except IOError as e:
         log.error(e)
         writer.write(str(e).encode())
-
-    finally:
-        log.debug('ending connection')
         writer.write_eof()
         await writer.drain()
 
+    finally:
+        log.debug('ending connection')
         writer.close()
         await writer.wait_closed()
 
@@ -104,6 +105,7 @@ async def send_file(filepath: str, writer: aio.StreamWriter, log: logging.Logger
 
         log.info(f'checksum of: {checksum}')
         writer.write(f'{checksum}\n'.encode())
+        await writer.drain()
 
         f.seek(0)
         writer.writelines(f) # don't need to encode
