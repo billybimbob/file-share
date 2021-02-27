@@ -1,5 +1,6 @@
 import sys
 import asyncio
+from collections import namedtuple
 
 
 CHUNK_SIZE = 1024
@@ -13,6 +14,7 @@ RETRY = 'retry'
 
 #endregion
 
+StreamPair = namedtuple('StreamPair', ['reader', 'writer'])
 
 async def ainput(prompt: str) -> str:
     """Async version of user input"""

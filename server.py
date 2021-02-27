@@ -46,6 +46,7 @@ async def server_connection(path: Path, reader: aio.StreamReader, writer: aio.St
     log.debug(f"connected to {remote}")
 
     try:
+        pair = defs.StreamPair(reader, writer)
         while request := await reader.readline():
             request = request.decode().strip()
 
@@ -53,7 +54,7 @@ async def server_connection(path: Path, reader: aio.StreamReader, writer: aio.St
                 await list_dir(path, writer, log)
 
             elif request == defs.DOWNLOAD:
-                await send_file_loop(path, reader, writer, log)
+                await send_file_loop(path, pair, log)
 
             else:
                 break
@@ -79,8 +80,9 @@ def path_connection(path: Path) -> Callable[[aio.StreamReader, aio.StreamReader]
     return lambda reader, writer: server_connection(path, reader, writer)
 
 
-async def send_file_loop(path: Path, reader: aio.StreamReader, writer: aio.StreamWriter, log: logging.Logger):
+async def send_file_loop(path: Path, pair: defs.StreamPair, log: logging.Logger):
     log.info("waiting for selected file")
+    reader, writer = pair
     filename = await reader.readuntil()
     filename = filename.decode().rstrip()
     filename = f'{path.name}/{filename}'

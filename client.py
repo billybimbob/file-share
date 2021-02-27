@@ -42,18 +42,17 @@ async def checked_read(reader: aio.StreamReader, n: int):
         return res
 
 
-async def client_session(path: Path, reader: aio.StreamReader, writer: aio.StreamWriter, retries: int):
+async def client_session(path: Path, pair: defs.StreamPair, retries: int):
     """Procedure on how the client interacts with the server"""
     logging.info('connected client')
-
     try:
         while option := await aio.wait_for(defs.ainput(CLIENT_PROMPT), 30):
             option = option.rstrip()
             try:
                 if option == '1':
-                    await list_dir(reader, writer)
+                    await list_dir(pair)
                 elif option == '2':
-                    await run_download(path, reader, writer, retries)
+                    await run_download(path, pair, retries)
                 else:
                     if option and option!='3':
                         logging.error("unknown command")
@@ -67,28 +66,28 @@ async def client_session(path: Path, reader: aio.StreamReader, writer: aio.Strea
         print('\ntimeout ocurred')
     
     finally:
-        writer.close()
-        await writer.wait_closed()
+        pair.writer.close()
+        await pair.writer.wait_closed()
 
 
 
-async def list_dir(reader: aio.StreamReader, writer: aio.StreamWriter):
+async def list_dir(pair: defs.StreamPair):
     """Fetches and prints the files from the server"""
-    writer.write(f'{defs.GET_FILES}\n'.encode())
-    await writer.drain()
+    pair.writer.write(f'{defs.GET_FILES}\n'.encode())
+    await pair.writer.drain()
 
-    dirs = await receive_dirs(reader)
+    dirs = await receive_dirs(pair.reader)
     print("The files on the server are:")
     print(f"{dirs}\n")
 
 
 
-async def run_download(path: Path, reader: aio.StreamReader, writer: aio.StreamWriter, retries: int):
+async def run_download(path: Path, pair: defs.StreamPair, retries: int):
     """Runs and selects files to download from the server"""
-    writer.write(f'{defs.GET_FILES}\n'.encode())
-    await writer.drain()
+    pair.writer.write(f'{defs.GET_FILES}\n'.encode())
+    await pair.writer.drain()
 
-    dirs = await receive_dirs(reader)
+    dirs = await receive_dirs(pair.reader)
     dirs = dirs.splitlines()
     selects = []
 
@@ -127,11 +126,11 @@ async def run_download(path: Path, reader: aio.StreamReader, writer: aio.StreamW
     try:
         if run_parallel:
             await aio.gather(*[
-                fetch_file_new(f, path, writer, retries) for f in selects
+                fetch_file_new(f, path, pair.writer, retries) for f in selects
             ])
         else:
             for f in selects:
-                await fetch_file(f, path, reader, writer, retries)
+                await fetch_file(f, path, pair, retries)
 
     except RuntimeError as e:
         logging.error(e)
@@ -141,15 +140,15 @@ async def run_download(path: Path, reader: aio.StreamReader, writer: aio.StreamW
 
 
 
-async def fetch_file(filename: str, path: Path, reader: aio.StreamReader, writer: aio.StreamWriter, retries: int):
+async def fetch_file(filename: str, path: Path, pair: defs.StreamPair, retries: int):
     """Basic form of timing and downloading from the server"""
     start_time = time()
-    await receive_file_loop(filename, path, reader, writer, retries)
+    await receive_file_loop(filename, path, pair, retries)
 
     elapsed = time() - start_time
     logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
-    writer.write(f'{elapsed}\n'.encode())
-    await writer.drain()
+    pair.writer.write(f'{elapsed}\n'.encode())
+    await pair.writer.drain()
 
 
 
@@ -162,27 +161,29 @@ async def fetch_file_new(filename: str, path: Path, writer_parent: aio.StreamWri
         host, _, _ = socket.gethostbyaddr(addr)
 
         # each file transfer is its own connection
-        reader, writer = await aio.open_connection(host, port)
+        pair = await aio.open_connection(host, port)
+        pair = defs.StreamPair(*pair)
         have_connection = True
 
-        await receive_file_loop(filename, path, reader, writer, retries)
+        await receive_file_loop(filename, path, pair, retries)
 
         elapsed = time() - start_time
         logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
-        writer.write(f'{elapsed}\n'.encode())
-        await writer.drain()
+        pair.writer.write(f'{elapsed}\n'.encode())
+        await pair.writer.drain()
 
     except Exception as e:
         raise e
     finally:
         if have_connection:
-            writer.close()
-            await writer.wait_closed()
+            pair.writer.close()
+            await pair.writer.wait_closed()
 
 
 
-async def receive_file_loop(filename: str, path: Path, reader: aio.StreamReader, writer: aio.StreamWriter, retries: int):
+async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, retries: int):
     """Runs multiple attempts to download a file from the server"""
+    reader, writer = pair
     writer.write(f'{defs.DOWNLOAD}\n'.encode())
     await writer.drain()
 
@@ -259,8 +260,8 @@ async def open_connection(host: str, port: int, path: Path, retries: int):
         host = socket.gethostname()
 
     try:
-        reader, writer = await aio.open_connection(host, port)
-        await client_session(path, reader, writer, retries)
+        pair = await aio.open_connection(host, port)
+        await client_session(path, defs.StreamPair(*pair), retries)
     except Exception as e:
         logging.error(f"connection error {e}")
     finally:
