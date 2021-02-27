@@ -1,6 +1,7 @@
 from typing import Callable, Awaitable, Dict
-from pathlib import Path
 from argparse import ArgumentParser
+from pathlib import Path
+from time import time
 
 import socket
 import asyncio as aio
@@ -56,9 +57,15 @@ async def server_connection(reader: aio.StreamReader, writer: aio.StreamWriter, 
             elif request == defs.DOWNLOAD:
                 await list_dir(path, writer)
                 log.debug("waiting for selected file")
+
                 filename = await reader.readuntil()
                 filename = filename.decode().rstrip()
-                await send_file(f'{path.name}/{filename}', writer, log)
+                filepath = f'{path.name}/{filename}'
+
+                start_time = time()
+                await send_file(filepath, writer, log)
+                elapsed = time() - start_time
+                log.debug(f'transfer time of {filepath} was {elapsed:.5f} secs')
 
             else:
                 break
@@ -96,9 +103,7 @@ async def send_file(filepath: str, writer: aio.StreamWriter, log: logging.Logger
         checksum = checksum.hexdigest()
 
         log.info(f'checksum of: {checksum}')
-
         writer.write(f'{checksum}\n'.encode())
-        await writer.drain()
 
         f.seek(0)
         writer.writelines(f) # don't need to encode

@@ -1,5 +1,6 @@
-from pathlib import Path
 from argparse import ArgumentParser
+from pathlib import Path
+from time import time
 
 import socket
 import asyncio as aio
@@ -70,6 +71,7 @@ async def client_session(reader: aio.StreamReader, writer: aio.StreamWriter, pat
         await writer.wait_closed()
 
 
+
 async def list_dir(option: str, reader: aio.StreamReader, writer: aio.StreamWriter):
     """Fetches and prints the files from the server"""
     writer.write(f'{defs.GET_FILES}\n'.encode())
@@ -77,6 +79,7 @@ async def list_dir(option: str, reader: aio.StreamReader, writer: aio.StreamWrit
     dirs = await receive_dirs(reader)
     print("The files on the server are:")
     print(f"{dirs}\n")
+
 
 
 async def run_download(option: str, reader: aio.StreamReader, writer: aio.StreamWriter):
@@ -100,7 +103,11 @@ async def run_download(option: str, reader: aio.StreamReader, writer: aio.Stream
     writer.write(f'{filename}\n'.encode())
     await writer.drain()
 
-    await receive_file(f'{path.name}/{filename}', reader)
+    filepath = f'{path.name}/{filename}'
+    start_time = time()
+    await receive_file(filepath, reader)
+    elapsed = time() - start_time
+    logging.debug(f'transfer time of {filepath} was {elapsed:.4f} secs')
 
 
 
@@ -109,6 +116,7 @@ async def receive_file(filepath: str, reader: aio.StreamReader):
     # expect the checksum to be sent first
     checksum = await checked_readline(reader)
     checksum = checksum.decode().strip()
+    checksum_passed = False
 
     with open(filepath, 'w+b') as f: # overrides existing
         while True:
@@ -123,12 +131,13 @@ async def receive_file(filepath: str, reader: aio.StreamReader):
             local_checksum.update(line)
         local_checksum = local_checksum.hexdigest()
 
-        if local_checksum != checksum:
+        checksum_passed = local_checksum == checksum
+        if checksum_passed:
+            logging.debug("checksum passed")
+        else:
             logging.error("checksum failed")
             # todo: retry
             raise aio.CancelledError
-        else:
-            logging.debug("checksum passed")
 
 
 
@@ -149,10 +158,8 @@ async def open_connection(host: str, port: int, path: Path):
     try:
         reader, writer = await aio.open_connection(host, port)
         await client_session(reader, writer, path)
-
     except Exception as e:
         logging.error(f"connection error {e}")
-
     finally:
         logging.debug('ending connection')
 

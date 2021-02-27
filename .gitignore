@@ -1,4 +1,6 @@
+__pycache__
 .vscode
+
+*ref*
 *dir*
 *.log
-__pycache__
