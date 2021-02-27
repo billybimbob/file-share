@@ -1,3 +1,4 @@
+import sys
 import socket
 import asyncio as aio
 import hashlib
@@ -9,23 +10,36 @@ import logging
 from typing import Callable, Awaitable, Dict
 
 
-SERVER_PROMPT = """
+SERVER_PROMPT = """\
 1. List files on server
 2. Delete a file
 3. Kill Server
-Select an Option: 
-"""
+Select an Option: """
 
 #region Server functions
 
-async def server_session(path: Path):
-    while option := input(SERVER_PROMPT):
+async def server_session(direct: Path):
+    """Cli for the server"""
+    while option := await ainput(SERVER_PROMPT):
+        option = option.rstrip()
+        
         if option == '1':
-            pass
+            file_list = '\n'.join(
+                d.name for d in direct.iterdir() if d.is_file()
+            )
+            print('The files on the server:')
+            print(f'{file_list}\n')
         elif option == '2':
             pass
         else:
+            print('exiting server')
             break
+
+
+async def ainput(prompt: str) -> str:
+    """Async version of user input"""
+    await aio.get_event_loop().run_in_executor(None, lambda: sys.stdout.write(prompt))
+    return await aio.get_event_loop().run_in_executor(None, sys.stdin.readline)
 
 
 async def server_connection(reader: aio.StreamReader, writer: aio.StreamWriter, path: Path):
@@ -35,7 +49,6 @@ async def server_connection(reader: aio.StreamReader, writer: aio.StreamWriter, 
 
     log = logging.getLogger(remote[0])
     default_logger(log)
-
     log.debug(f"connected to {remote}")
 
     try:
@@ -45,14 +58,12 @@ async def server_connection(reader: aio.StreamReader, writer: aio.StreamWriter, 
             if request == '1':
                 log.debug("listing dir")
                 await list_dir(path, writer)
-
             elif request == '2':
                 await list_dir(path, writer)
                 log.debug("waiting for selected file")
                 filename = await reader.readuntil()
                 filename = filename.decode().rstrip()
                 await send_file(f'{path.name}/{filename}', writer, log)
-
             else:
                 break
 
@@ -67,6 +78,8 @@ async def server_connection(reader: aio.StreamReader, writer: aio.StreamWriter, 
         log.debug('ending connection')
         writer.write_eof()
         await writer.drain()
+
+        writer.close()
         await writer.wait_closed()
 
 
@@ -98,9 +111,9 @@ async def send_file(filepath: str, writer: aio.StreamWriter, log: logging.Logger
 
 
 
-async def list_dir(directory: Path, writer: aio.StreamWriter):
+async def list_dir(direct: Path, writer: aio.StreamWriter):
     """Sends the server directory files to the client"""
-    file_list = '\n'.join(d.name for d in directory.iterdir() if d.is_file())
+    file_list = '\n'.join(d.name for d in direct.iterdir() if d.is_file())
     writer.write(file_list.encode())
     await writer.drain()
 
@@ -117,15 +130,20 @@ async def start_stream(port: int, path: Path):
         addr = server.sockets[0].getsockname()
         logging.debug(f'created server on {addr}, listening for clients')
 
-        # aio.create_task(server_session(path))
-        await server.serve_forever()
+        aio.create_task(server.serve_forever())
+        await aio.create_task(server_session(path))
+
+    await server.wait_closed()
+    logging.debug("server has stopped")
  
+
 
 def default_logger(log: logging.Logger):
     log.setLevel(logging.DEBUG)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(filename='server.log', level=logging.DEBUG)
     default_logger(logging.getLogger())
 
     args = argparse.ArgumentParser("creates a server")
@@ -139,7 +157,4 @@ if __name__ == "__main__":
     path = Path(f'./{args.dir}') # ensure relative path
     path.mkdir(exist_ok=True)
 
-    try:
-        aio.run(start_stream(args.port, path))
-    except KeyboardInterrupt:
-        logging.debug("server is stopped")
+    aio.run(start_stream(args.port, path))

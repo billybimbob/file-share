@@ -1,3 +1,4 @@
+import sys
 from socket import gethostname
 import asyncio as aio
 import hashlib
@@ -17,6 +18,10 @@ Select an Option: """
 #region Client functions
     
 async def checked_readline(reader: aio.StreamReader):
+    """
+    Calls readline on the reader, and assumes that if at eof,
+    an exception was passed
+    """
     res = await reader.readline()
     if reader.at_eof():
         raise RuntimeError(res.decode())
@@ -25,6 +30,10 @@ async def checked_readline(reader: aio.StreamReader):
 
 
 async def checked_read(reader: aio.StreamReader, n: int):
+    """
+    Calls read on the reader, and assumes that if at eof,
+    an exception was passed
+    """
     res = await reader.read(n)
     if reader.at_eof():
         raise RuntimeError(res.decode())
@@ -32,45 +41,64 @@ async def checked_read(reader: aio.StreamReader, n: int):
         return res
 
 
+async def ainput(prompt: str) -> str:
+    """Async version of user input"""
+    await aio.get_event_loop().run_in_executor(None, lambda: sys.stdout.write(prompt))
+    return await aio.get_event_loop().run_in_executor(None, sys.stdin.readline)
+
+
+
 async def client_session(reader: aio.StreamReader, writer: aio.StreamWriter, path: Path):
     """Procedure on how the client interacts with the server"""
     logging.debug('connected client')
 
-    while option := input(CLIENT_PROMPT):
-        if option == '1':
-            writer.write(f'{option}\n'.encode())
-            await writer.drain()
-            dirs = await receive_dirs(reader)
-            print("The files on the server are:")
-            print(dirs)
+    try:
+        while option := await aio.wait_for(ainput(CLIENT_PROMPT), 10):
+            option = option.rstrip()
 
-        elif option == '2':
-            writer.write(f'{option}\n'.encode())
-            await writer.drain()
-
-            dirs = await receive_dirs(reader)
-            dirs = dirs.splitlines()
-            dir_options = (f'{i+1}: {file}' for i, file in enumerate(dirs))
-
-            print('\n'.join(dir_options))
-            selected = input("enter file to download: ")
-
-            if selected.isnumeric():
-                idx = int(selected) - 1 
-                if idx >= 0 and idx < len(dirs):
-                    filename = dirs[idx]
-                else:
-                    filename = selected
+            if option == '1':
+                await list_dir(option, reader, writer)
+            elif option == '2':
+                await run_download(option, reader, writer)
             else:
-                filename = selected
+                break
 
-            writer.write(f'{filename}\n'.encode())
-            await writer.drain()
+    except aio.TimeoutError:
+        print('\ntimeout ocurred')
+        pass
 
-            await receive_file(f'{path.name}/{filename}', reader)
 
-        else:
-            break
+async def list_dir(option: str, reader: aio.StreamReader, writer: aio.StreamWriter):
+    """Fetches and prints the files from the server"""
+    writer.write(f'{option}\n'.encode())
+    await writer.drain()
+    dirs = await receive_dirs(reader)
+    print("The files on the server are:")
+    print(dirs)
+
+
+async def run_download(option: str, reader: aio.StreamReader, writer: aio.StreamWriter):
+    """Runs and selects files to download from the server"""
+    writer.write(f'{option}\n'.encode())
+    await writer.drain()
+
+    dirs = await receive_dirs(reader)
+    dirs = dirs.splitlines()
+    dir_options = (f'{i+1}: {file}' for i, file in enumerate(dirs))
+
+    print('\n'.join(dir_options))
+    selected = input("enter file to download: ")
+
+    filename = selected
+    if selected.isnumeric():
+        idx = int(selected) - 1 
+        if idx >= 0 and idx < len(dirs):
+            filename = dirs[idx]
+
+    writer.write(f'{filename}\n'.encode())
+    await writer.drain()
+
+    await receive_file(f'{path.name}/{filename}', reader)
 
 
 
@@ -104,6 +132,7 @@ async def receive_file(filepath: str, reader: aio.StreamReader):
 
 
 async def receive_dirs(reader: aio.StreamReader) -> str:
+    """Attempt to read multiple lines of file names from the reader"""
     file_names = await checked_read(reader, CHUNK_SIZE)
     file_names = file_names.decode()
     return file_names
@@ -112,11 +141,16 @@ async def receive_dirs(reader: aio.StreamReader) -> str:
 
 
 
-async def start_stream(port: int, path: Path):
-    """Switch to convert the command args to a given server or client"""
-    host = gethostname() # should be loopback
+async def open_connection(port: int, path: Path, host: str=None):
+    """Attempts to connect to a server with the given args"""
+    if host is None:
+        # should be loopback
+        host = gethostname()
+
+    has_connect = False
     try:
         reader, writer = await aio.open_connection(host, port)
+        has_connect = True
         await client_session(reader, writer, path)
 
     except Exception as e:
@@ -124,8 +158,9 @@ async def start_stream(port: int, path: Path):
 
     finally:
         logging.debug('ending connection')
-        writer.close()
-        await writer.wait_closed()
+        if has_connect:
+            writer.close()
+            await writer.wait_closed()
 
 
 
@@ -144,4 +179,4 @@ if __name__ == "__main__":
     path = Path(f'./{args.dir}') # ensure relative path
     path.mkdir(exist_ok=True)
 
-    aio.run(start_stream(args.port, path))
+    aio.run(open_connection(args.port, path))

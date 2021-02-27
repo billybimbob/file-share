@@ -1,3 +1,4 @@
 .vscode
 *dir*
+*.log
 __pycache__
