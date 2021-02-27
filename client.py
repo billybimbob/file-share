@@ -1,22 +1,22 @@
-import sys
-from socket import gethostname
+from pathlib import Path
+from argparse import ArgumentParser
+
+import socket
 import asyncio as aio
 import hashlib
-
-from pathlib import Path
-import argparse
 import logging
 
+import serverbase as defs
 
-CHUNK_SIZE = 1024
-CLIENT_PROMPT = """
+
+
+CLIENT_PROMPT = """\
 1. List files on server
 2. Download file
 3. Exit
 Select an Option: """
-
-#region Client functions
     
+
 async def checked_readline(reader: aio.StreamReader):
     """
     Calls readline on the reader, and assumes that if at eof,
@@ -41,45 +41,47 @@ async def checked_read(reader: aio.StreamReader, n: int):
         return res
 
 
-async def ainput(prompt: str) -> str:
-    """Async version of user input"""
-    await aio.get_event_loop().run_in_executor(None, lambda: sys.stdout.write(prompt))
-    return await aio.get_event_loop().run_in_executor(None, sys.stdin.readline)
-
-
-
 async def client_session(reader: aio.StreamReader, writer: aio.StreamWriter, path: Path):
     """Procedure on how the client interacts with the server"""
     logging.debug('connected client')
 
     try:
-        while option := await aio.wait_for(ainput(CLIENT_PROMPT), 10):
+        while option := await aio.wait_for(defs.ainput(CLIENT_PROMPT), 30):
             option = option.rstrip()
+            try:
+                if option == '1':
+                    await list_dir(option, reader, writer)
+                elif option == '2':
+                    await run_download(option, reader, writer)
+                else:
+                    if option and option!='3':
+                        logging.error("unknown command")
+                    print('closing client')
+                    break
 
-            if option == '1':
-                await list_dir(option, reader, writer)
-            elif option == '2':
-                await run_download(option, reader, writer)
-            else:
-                break
+            except RuntimeError as e:
+                logging.error(f"error from server: {e}")
 
     except aio.TimeoutError:
         print('\ntimeout ocurred')
-        pass
+    
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
 
 async def list_dir(option: str, reader: aio.StreamReader, writer: aio.StreamWriter):
     """Fetches and prints the files from the server"""
-    writer.write(f'{option}\n'.encode())
+    writer.write(f'{defs.GET_FILES}\n'.encode())
     await writer.drain()
     dirs = await receive_dirs(reader)
     print("The files on the server are:")
-    print(dirs)
+    print(f"{dirs}\n")
 
 
 async def run_download(option: str, reader: aio.StreamReader, writer: aio.StreamWriter):
     """Runs and selects files to download from the server"""
-    writer.write(f'{option}\n'.encode())
+    writer.write(f'{defs.DOWNLOAD}\n'.encode())
     await writer.drain()
 
     dirs = await receive_dirs(reader)
@@ -110,21 +112,20 @@ async def receive_file(filepath: str, reader: aio.StreamReader):
 
     with open(filepath, 'w+b') as f: # overrides existing
         while True:
-            chunk = await checked_read(reader, CHUNK_SIZE)
+            chunk = await checked_read(reader, defs.CHUNK_SIZE)
             f.write(chunk)
-            if len(chunk) < CHUNK_SIZE:
+            if len(chunk) < defs.CHUNK_SIZE:
                 break
 
         f.seek(0)
         local_checksum = hashlib.md5()
         for line in f:
             local_checksum.update(line)
-        
         local_checksum = local_checksum.hexdigest()
-        logging.debug(f'checksum of: {local_checksum} vs {checksum}')
 
         if local_checksum != checksum:
             logging.error("checksum failed")
+            # todo: retry
             raise aio.CancelledError
         else:
             logging.debug("checksum passed")
@@ -133,24 +134,20 @@ async def receive_file(filepath: str, reader: aio.StreamReader):
 
 async def receive_dirs(reader: aio.StreamReader) -> str:
     """Attempt to read multiple lines of file names from the reader"""
-    file_names = await checked_read(reader, CHUNK_SIZE)
+    file_names = await checked_read(reader, defs.CHUNK_SIZE)
     file_names = file_names.decode()
     return file_names
 
-#endregion
 
 
-
-async def open_connection(port: int, path: Path, host: str=None):
+async def open_connection(host: str, port: int, path: Path):
     """Attempts to connect to a server with the given args"""
     if host is None:
         # should be loopback
-        host = gethostname()
+        host = socket.gethostname()
 
-    has_connect = False
     try:
         reader, writer = await aio.open_connection(host, port)
-        has_connect = True
         await client_session(reader, writer, path)
 
     except Exception as e:
@@ -158,25 +155,21 @@ async def open_connection(port: int, path: Path, host: str=None):
 
     finally:
         logging.debug('ending connection')
-        if has_connect:
-            writer.close()
-            await writer.wait_closed()
-
-
 
 
 if __name__ == "__main__":
     logging.getLogger().setLevel(logging.DEBUG)
 
-    args = argparse.ArgumentParser("creates a client and connect a server")
+    args = ArgumentParser("creates a client and connect a server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--dir", default='', help="the client download folder")
+    args.add_argument("-i", "--address", default=None, help="ip address of the server")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port connect to the server")
-    # args.add_argument("-s", "--server", action="store_true", help="create a server, will default to a client connection")
     args = args.parse_args()
 
     # todo: account for config
     path = Path(f'./{args.dir}') # ensure relative path
     path.mkdir(exist_ok=True)
+    host = socket.gethostbyaddr(args.address) if args.address else None 
 
-    aio.run(open_connection(args.port, path))
+    aio.run(open_connection(host, args.port, path))
