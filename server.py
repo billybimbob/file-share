@@ -36,7 +36,7 @@ async def server_session(direct: Path):
 
 
 
-async def server_connection(reader: aio.StreamReader, writer: aio.StreamWriter, path: Path):
+async def server_connection(path: Path, reader: aio.StreamReader, writer: aio.StreamWriter):
     """Callback called for the server wheneven a connection is established with a client"""
     addr, _, _, _ = writer.get_extra_info('peername')
     remote = socket.gethostbyaddr(addr)
@@ -50,24 +50,10 @@ async def server_connection(reader: aio.StreamReader, writer: aio.StreamWriter, 
             request = request.decode().strip()
 
             if request == defs.GET_FILES:
-                log.debug("listing dir")
-                await list_dir(path, writer)
+                await list_dir(path, writer, log)
 
             elif request == defs.DOWNLOAD:
-                log.debug("waiting for selected file")
-                filename = await reader.readuntil()
-                filename = filename.decode().rstrip()
-                filename = f'{path.name}/{filename}'
-
-                should_send = True
-                while should_send:
-                    await send_file(filename, writer, log)
-                    ack = await reader.readline()
-                    should_send = ack.decode().strip() != defs.SUCCESS
-
-                elapsed = await reader.readline()
-                elapsed = float(elapsed.decode().strip())
-                log.debug(f'transfer time of {filename} was {elapsed:.5f} secs')
+                await send_file_loop(path, reader, writer, log)
 
             else:
                 break
@@ -90,7 +76,25 @@ async def server_connection(reader: aio.StreamReader, writer: aio.StreamWriter, 
 
 def path_connection(path: Path) -> Callable[[aio.StreamReader, aio.StreamReader], Awaitable]:
     """Creates a stream callback, and specifying the path for the server directory"""
-    return lambda reader, writer: server_connection(reader, writer, path)
+    return lambda reader, writer: server_connection(path, reader, writer)
+
+
+async def send_file_loop(path: Path, reader: aio.StreamReader, writer: aio.StreamWriter, log: logging.Logger):
+    log.info("waiting for selected file")
+    filename = await reader.readuntil()
+    filename = filename.decode().rstrip()
+    filename = f'{path.name}/{filename}'
+
+    should_send = True
+    while should_send:
+        await send_file(filename, writer, log)
+        ack = await reader.readline()
+        should_send = ack.decode().strip() != defs.SUCCESS
+
+    elapsed = await reader.readline()
+    elapsed = float(elapsed.decode().strip())
+    log.debug(f'transfer time of {filename} was {elapsed:.5f} secs')
+
 
 
 async def send_file(filepath: str, writer: aio.StreamWriter, log: logging.Logger):
@@ -113,38 +117,40 @@ async def send_file(filepath: str, writer: aio.StreamWriter, log: logging.Logger
 
 
 
-async def list_dir(direct: Path, writer: aio.StreamWriter):
+async def list_dir(direct: Path, writer: aio.StreamWriter, log: logging.Logger):
     """Sends the server directory files to the client"""
+    log.info("listing dir")
     file_list = '\n'.join(d.name for d in direct.iterdir() if d.is_file())
     writer.write(file_list.encode())
     await writer.drain()
 
 
 
-async def start_server(port: int, path: Path):
+async def start_server(port: int, path: Path, log: logging.Logger):
     """Switch to convert the command args to a given server or client"""
     host = socket.gethostname() # should be loopback
 
     server = await aio.start_server(path_connection(path), host=host, port=port)
     async with server:
         addr = server.sockets[0].getsockname()
-        logging.debug(f'created server on {addr}, listening for clients')
+        log.info(f'created server on {addr}, listening for clients')
 
         aio.create_task(server.serve_forever())
         await aio.create_task(server_session(path))
 
     await server.wait_closed()
-    logging.debug("server has stopped")
+    log.info("server has stopped")
  
 
 
 def default_logger(log: logging.Logger):
     log.setLevel(logging.DEBUG)
+    return log
 
 
 if __name__ == "__main__":
-    logging.basicConfig(filename='server.log', level=logging.DEBUG)
-    default_logger(logging.getLogger())
+    logging.basicConfig(filename='server.log', format="%(name)s:%(levelname)s: %(message)s", level=logging.DEBUG)
+    log = default_logger(logging.getLogger("server"))
 
     args = ArgumentParser("creates a server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
@@ -156,4 +162,4 @@ if __name__ == "__main__":
     path = Path(f'./{args.dir}') # ensure relative path
     path.mkdir(exist_ok=True)
 
-    aio.run(start_server(args.port, path))
+    aio.run(start_server(args.port, path, log))
