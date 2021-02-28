@@ -7,7 +7,7 @@ import asyncio as aio
 import hashlib
 import logging
 
-import serverbase as defs
+import serverdefs as defs
 
 
 SERVER_PROMPT = """\

@@ -8,7 +8,7 @@ import asyncio as aio
 import hashlib
 import logging
 
-import serverbase as defs
+import serverdefs as defs
 
 
 CLIENT_PROMPT = """\
@@ -72,6 +72,9 @@ async def client_session(path: Path, sockets: List[defs.StreamPair], retries: in
 
     except aio.TimeoutError:
         print('\ntimeout ocurred')
+
+    except Exception as e:
+        logging.error(e)
     
     finally:
         for socket in sockets:
@@ -188,10 +191,24 @@ async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, re
     writer.write(f'{filename}\n'.encode())
     await writer.drain()
 
-    filepath = f'{path.name}/{filename}'
+    # filepath = f'{path.name}/{filename}'
+    # p = Path(filepath)
+    # stem = p.stem
+    # exts = "".join(p.suffixes)
+
+    # dup_mod = 1
+    # while p.exists():
+    #     filepath = f'{path.name}/{stem}({dup_mod}){"".join(exts)}'
+    #     p = Path(filepath)
+    #     dup_mod += 1
+
+    filepath = Path(f'{path}/{filename}')
+
+    stem = filepath.stem
+    exts = "".join(filepath.suffixes)
     dup_mod = 1
-    while (p := Path(filepath)).exists():
-        filepath = f'{path.name}/{p.stem}({dup_mod}){"".join(p.suffixes)}'
+    while filepath.exists():
+        filepath = filepath.with_name(f'{stem}({dup_mod}){exts}')
         dup_mod += 1
 
     got_file = False
@@ -213,7 +230,7 @@ async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, re
 
 
 
-async def receive_file(filepath: str, reader: aio.StreamReader) -> Tuple[bool, int]:
+async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, int]:
     """ Used by the client side to download and verify correctness of download"""
     checksum_passed = False
     total_bytes = 0
