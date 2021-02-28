@@ -70,11 +70,11 @@ async def client_session(path: Path, sockets: List[defs.StreamPair], retries: in
     except RuntimeError as e:
         logging.error(f"error from server: {e}")
 
+    except IOError as e:
+        logging.error(e)
+
     except aio.TimeoutError:
         print('\ntimeout ocurred')
-
-    except Exception as e:
-        logging.error(e)
     
     finally:
         for socket in sockets:
@@ -108,6 +108,7 @@ async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue, retri
 
     while len(dirs) > 0: # file selection
         if len(dirs) == 1:
+            print("adding last file")
             selects.append(dirs[0])
             break
 
@@ -168,7 +169,7 @@ async def fetch_file(filename: str, path: Path, pair: defs.StreamPair, retries: 
 
 
 async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue, retries: int):
-    """Creates a new connection with the server, and downloads the filename"""
+    """Download a file from the server with on of the pooled sockets"""
     start_time = time()
     pair = await sockets.get()
     await receive_file_loop(filename, path, pair, retries)
@@ -190,17 +191,6 @@ async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, re
 
     writer.write(f'{filename}\n'.encode())
     await writer.drain()
-
-    # filepath = f'{path.name}/{filename}'
-    # p = Path(filepath)
-    # stem = p.stem
-    # exts = "".join(p.suffixes)
-
-    # dup_mod = 1
-    # while p.exists():
-    #     filepath = f'{path.name}/{stem}({dup_mod}){"".join(exts)}'
-    #     p = Path(filepath)
-    #     dup_mod += 1
 
     filepath = Path(f'{path}/{filename}')
 
@@ -274,17 +264,32 @@ async def receive_dirs(reader: aio.StreamReader) -> str:
 
 
 
-async def open_connection(host: str, port: int, path: Path, num_sockets: int, retries: int, timeout: int):
-    """Attempts to connect to a server with the given args"""
-    if host is None:
+def process_args(address: str, num_sockets: int, path: str) -> Tuple[str, int, Path]:
+    """Normalize and parse arguments"""
+    if address is None:
         # should be loopback
         host = socket.gethostname()
+    else :
+        host, _, _ = socket.gethostbyaddr(args.address)
 
     if num_sockets <= 1:
         num_sockets = 2
 
+    path = Path(f'./{path}') # ensure relative path
+    path.mkdir(exist_ok=True)
+
+    return (host, num_sockets, path)
+
+
+
+async def open_connection(
+        address: str, port: int, directory: str, workers: int, retries: int, timeout: int,
+        *args, **kwargs):
+    """Attempts to connect to a server with the given args"""
     try:
         sockets: List[defs.StreamPair] = []
+        host, num_sockets, path = process_args(address, workers, directory)
+
         for _ in range(num_sockets):
             pair = await aio.open_connection(host, port)
             pair = defs.StreamPair(*pair)
@@ -307,30 +312,13 @@ if __name__ == "__main__":
     args = ArgumentParser("creates a client and connect a server")
     args.add_argument("-a", "--address", default=None, help="ip address of the server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
-    args.add_argument("-d", "--dir", default='', help="the client download folder")
+    args.add_argument("-d", "--directory", default='', help="the client download folder")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port connect to the server")
     args.add_argument("-r", "--retries", type=int, default=3, help="amount of download retries on failure")
     args.add_argument("-t", "--timeout", type=int, default=60, help="time in seconds of no activity til the client disconnects")
-    args.add_argument("-w", "--workers", type=int, default=5, help="max number of sockets that can be connected be connected to the server")
+    args.add_argument("-w", "--workers", type=int, default=2, help="max number of sockets that can be connected be connected to the server")
 
     args = args.parse_args()
+    args = defs.merge_config_args(args)
 
-    if args.config:
-        # ignore other args is config is present
-        args = defs.read_config(args.config, {
-            'dir': '',
-            'address': None,
-            'port': 8888,
-            'retries': 3,
-            'timeout': 60,
-            'workers': 5
-        })
-
-    path = Path(f'./{args.dir}') # ensure relative path
-    path.mkdir(exist_ok=True)
-
-    host = None
-    if args.address:
-        host, _, _ = socket.gethostbyaddr(args.address)
-
-    aio.run(open_connection(host, args.port, path, args.workers, args.retries, args.timeout))
+    aio.run( open_connection(**args) )

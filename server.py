@@ -38,9 +38,9 @@ async def server_connection(path: Path, reader: aio.StreamReader, writer: aio.St
     addr, _, _, _ = writer.get_extra_info('peername')
     remote = socket.gethostbyaddr(addr)
 
-    log = logging.getLogger(remote[0])
-    default_logger(log)
-    log.debug(f"connected to {remote}")
+    logger = logging.getLogger(remote[0])
+    default_logger(logger)
+    logger.debug(f"connected to {remote}")
 
     try:
         pair = defs.StreamPair(reader, writer)
@@ -48,10 +48,10 @@ async def server_connection(path: Path, reader: aio.StreamReader, writer: aio.St
             request = request.decode().strip()
 
             if request == defs.GET_FILES:
-                await list_dir(path, writer, log)
+                await list_dir(path, writer, logger)
 
             elif request == defs.DOWNLOAD:
-                await send_file_loop(path, pair, log)
+                await send_file_loop(path, pair, logger)
 
             else:
                 break
@@ -60,13 +60,13 @@ async def server_connection(path: Path, reader: aio.StreamReader, writer: aio.St
         pass
 
     except IOError as e:
-        log.error(e)
+        logger.error(e)
         writer.write(str(e).encode())
         writer.write_eof()
         await writer.drain()
 
     finally:
-        log.debug('ending connection')
+        logger.debug('ending connection')
         writer.close()
         await writer.wait_closed()
 
@@ -77,8 +77,9 @@ def path_connection(path: Path) -> Callable[[aio.StreamReader, aio.StreamReader]
     return lambda reader, writer: server_connection(path, reader, writer)
 
 
-async def send_file_loop(path: Path, pair: defs.StreamPair, log: logging.Logger):
-    log.info("waiting for selected file")
+async def send_file_loop(path: Path, pair: defs.StreamPair, logger: logging.Logger):
+    """Runs multiple attempts to send a file based on the receiver response"""
+    logger.info("waiting for selected file")
     reader, writer = pair
     filename = await reader.readuntil()
     filename = filename.decode().rstrip()
@@ -88,7 +89,7 @@ async def send_file_loop(path: Path, pair: defs.StreamPair, log: logging.Logger)
     should_send = True
 
     while should_send:
-        await send_file(filename, writer, log)
+        await send_file(filename, writer, logger)
         amnt_read = await reader.readline()
         amnt_read = int(amnt_read.decode().strip())
         tot_bytes += amnt_read
@@ -98,13 +99,13 @@ async def send_file_loop(path: Path, pair: defs.StreamPair, log: logging.Logger)
 
     elapsed = await reader.readline()
     elapsed = float(elapsed.decode().strip())
-    log.debug(f'transfer of {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs')
+    logger.debug(f'transfer of {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs')
 
 
 
-async def send_file(filepath: str, writer: aio.StreamWriter, log: logging.Logger):
+async def send_file(filepath: str, writer: aio.StreamWriter, logger: logging.Logger):
     """Used by server side to send file contents to a given client"""
-    log.debug(f'trying to send file {filepath}')
+    logger.debug(f'trying to send file {filepath}')
 
     with open(filepath, 'rb') as f:
         checksum = hashlib.md5()
@@ -112,7 +113,7 @@ async def send_file(filepath: str, writer: aio.StreamWriter, log: logging.Logger
             checksum.update(line)
         checksum = checksum.hexdigest()
 
-        log.info(f'checksum of: {checksum}')
+        logger.info(f'checksum of: {checksum}')
         writer.write(f'{checksum}\n'.encode())
         await writer.drain()
 
@@ -131,56 +132,57 @@ async def list_dir(direct: Path, writer: aio.StreamWriter, log: logging.Logger):
 
 
 
-async def start_server(port: int, path: Path, log: logging.Logger):
+def init_log(log: str):
+    """Specifies logging format and location"""
+    log = Path(f'./{log}')
+    log_settings = {'format': "%(name)s:%(levelname)s: %(message)s", 'level': logging.DEBUG}
+
+    if not log.exists() or log.is_file():
+        logging.basicConfig(filename=log, **log_settings)
+    else: # just use stdout
+        logging.basicConfig(**log_settings)
+
+
+
+async def start_server(port: int, directory: str, log: str, *args, **kwargs):
     """Switch to convert the command args to a given server or client"""
     host = socket.gethostname() # should be loopback
+
+    path = Path(f'./{directory}') # ensure relative path
+    path.mkdir(exist_ok=True)
+
+    init_log(log)
+    logger = default_logger(logging.getLogger("server"))
 
     server = await aio.start_server(path_connection(path), host=host, port=port)
     async with server:
         addr = server.sockets[0].getsockname()
-        log.info(f'created server on {addr}, listening for clients')
+        logger.info(f'created server on {addr}, listening for clients')
 
         aio.create_task(server.serve_forever())
         await aio.create_task(server_session(path))
 
     await server.wait_closed()
-    log.info("server has stopped")
+    logger.info("server has stopped")
  
 
 
 def default_logger(log: logging.Logger):
+    """Settings for all created loggers"""
     log.setLevel(logging.DEBUG)
     return log
 
 
 if __name__ == "__main__":
     logging.getLogger('asyncio').setLevel(logging.WARNING)
-    log = default_logger(logging.getLogger("server"))
 
     args = ArgumentParser("creates a server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
-    args.add_argument("-d", "--dir", default='', help="the directory to where the server hosts files")
+    args.add_argument("-d", "--directory", default='', help="the directory to where the server hosts files")
     args.add_argument("-l", "--log", default='server.log', help="the file to write log info to")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port to run the server on")
+
     args = args.parse_args()
+    args = defs.merge_config_args(args)
 
-    if args.config:
-        # ignore other args is config is present
-        args = defs.read_config(args.config, {
-            'dir': '',
-            'port': 8888,
-            'log': 'server.log'
-        })
-
-    log_loc = Path(f'./{args.log}')
-    log_settings = {'format': "%(name)s:%(levelname)s: %(message)s", 'level': logging.DEBUG}
-    if not log_loc.exists() or log_loc.is_file():
-        logging.basicConfig(filename=log_loc, **log_settings)
-    else:
-        # just use stdout
-        logging.basicConfig(**log_settings)
-
-    path = Path(f'./{args.dir}') # ensure relative path
-    path.mkdir(exist_ok=True)
-
-    aio.run(start_server(args.port, path, log))
+    aio.run( start_server(**args) )
