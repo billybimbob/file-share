@@ -27,8 +27,6 @@ async def server_session(direct: Path):
             )
             print('The files on the server:')
             print(f'{file_list}\n')
-        elif option == '2':
-            pass
         else:
             print('Exiting server')
             break

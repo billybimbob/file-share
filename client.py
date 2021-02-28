@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, List
 from argparse import ArgumentParser
 from pathlib import Path
 from time import time
@@ -42,32 +42,44 @@ async def checked_read(reader: aio.StreamReader, n: int):
         return res
 
 
-async def client_session(path: Path, pair: defs.StreamPair, retries: int):
+async def client_session(path: Path, sockets: List[defs.StreamPair], retries: int, timeout: int):
     """Procedure on how the client interacts with the server"""
     logging.info('connected client')
+
+    pair = sockets[0]
+    pool = aio.Queue(len(sockets)-1)
+    for s in sockets[1:]:
+        pool.put_nowait(s)
+
     try:
-        while option := await aio.wait_for(defs.ainput(CLIENT_PROMPT), 30):
+        while option := await aio.wait_for(defs.ainput(CLIENT_PROMPT), timeout):
             option = option.rstrip()
             try:
                 if option == '1':
                     await list_dir(pair)
                 elif option == '2':
-                    await run_download(path, pair, retries)
+                    await run_download(path, pair, pool, retries)
                 else:
                     # if option and option!='3':
                     #     logging.error("unknown command")
                     print('closing client')
                     break
+            except ValueError as e:
+                logging.error(e)
 
-            except RuntimeError as e:
-                logging.error(f"error from server: {e}")
+    except RuntimeError as e:
+        logging.error(f"error from server: {e}")
 
     except aio.TimeoutError:
         print('\ntimeout ocurred')
     
     finally:
-        pair.writer.close()
-        await pair.writer.wait_closed()
+        for socket in sockets:
+            socket.writer.close()
+
+        await aio.gather(*[
+            s.writer.wait_closed() for s in sockets
+        ])
 
 
 
@@ -82,7 +94,7 @@ async def list_dir(pair: defs.StreamPair):
 
 
 
-async def run_download(path: Path, pair: defs.StreamPair, retries: int):
+async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue, retries: int):
     """Runs and selects files to download from the server"""
     pair.writer.write(f'{defs.GET_FILES}\n'.encode())
     await pair.writer.drain()
@@ -91,7 +103,7 @@ async def run_download(path: Path, pair: defs.StreamPair, retries: int):
     dirs = dirs.splitlines()
     selects = []
 
-    while len(selects) <= len(dirs): # file selection
+    while len(dirs) > 0: # file selection
         if len(dirs) == 1:
             selects.append(dirs[0])
             break
@@ -108,7 +120,7 @@ async def run_download(path: Path, pair: defs.StreamPair, retries: int):
         try:
             dirs.remove(choice)
         except:
-            raise RuntimeError('invalid file given')
+            raise ValueError('invalid file given')
 
         selects.append(choice)
 
@@ -126,7 +138,7 @@ async def run_download(path: Path, pair: defs.StreamPair, retries: int):
     try:
         if run_parallel:
             await aio.gather(*[
-                fetch_file_new(f, path, pair.writer, retries) for f in selects
+                fetch_file_pooled(f, path, pool, retries) for f in selects
             ])
         else:
             for f in selects:
@@ -152,32 +164,18 @@ async def fetch_file(filename: str, path: Path, pair: defs.StreamPair, retries: 
 
 
 
-async def fetch_file_new(filename: str, path: Path, writer_parent: aio.StreamWriter, retries: int):
+async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue, retries: int):
     """Creates a new connection with the server, and downloads the filename"""
     start_time = time()
-    have_connection = False
-    try:
-        addr, port, _, _ = writer_parent.get_extra_info('peername')
-        host, _, _ = socket.gethostbyaddr(addr)
+    pair = await sockets.get()
+    await receive_file_loop(filename, path, pair, retries)
 
-        # each file transfer is its own connection
-        pair = await aio.open_connection(host, port)
-        pair = defs.StreamPair(*pair)
-        have_connection = True
+    elapsed = time() - start_time
+    logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
+    pair.writer.write(f'{elapsed}\n'.encode())
+    await pair.writer.drain()
 
-        await receive_file_loop(filename, path, pair, retries)
-
-        elapsed = time() - start_time
-        logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
-        pair.writer.write(f'{elapsed}\n'.encode())
-        await pair.writer.drain()
-
-    except Exception as e:
-        raise e
-    finally:
-        if have_connection:
-            pair.writer.close()
-            await pair.writer.wait_closed()
+    sockets.put_nowait(pair) # should never be > maxsize
 
 
 
@@ -259,15 +257,24 @@ async def receive_dirs(reader: aio.StreamReader) -> str:
 
 
 
-async def open_connection(host: str, port: int, path: Path, retries: int):
+async def open_connection(host: str, port: int, path: Path, num_sockets: int, retries: int, timeout: int):
     """Attempts to connect to a server with the given args"""
     if host is None:
         # should be loopback
         host = socket.gethostname()
 
+    if num_sockets <= 1:
+        num_sockets = 2
+
     try:
-        pair = await aio.open_connection(host, port)
-        await client_session(path, defs.StreamPair(*pair), retries)
+        sockets: List[defs.StreamPair] = []
+        for _ in range(num_sockets):
+            pair = await aio.open_connection(host, port)
+            pair = defs.StreamPair(*pair)
+            sockets.append(pair)
+
+        await client_session(path, sockets, retries, timeout)
+
     except Exception as e:
         logging.error(f"connection error {e}")
     finally:
@@ -286,6 +293,9 @@ if __name__ == "__main__":
     args.add_argument("-d", "--dir", default='', help="the client download folder")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port connect to the server")
     args.add_argument("-r", "--retries", type=int, default=3, help="amount of download retries on failure")
+    args.add_argument("-t", "--timeout", type=int, default=60, help="time in seconds of no activity til the client disconnects")
+    args.add_argument("-w", "--workers", type=int, default=5, help="max number of sockets that can be connected be connected to the server")
+
     args = args.parse_args()
 
     if args.config:
@@ -294,13 +304,16 @@ if __name__ == "__main__":
             'dir': '',
             'address': None,
             'port': 8888,
-            'retries': 3
+            'retries': 3,
+            'timeout': 60,
+            'workers': 5
         })
 
     path = Path(f'./{args.dir}') # ensure relative path
     path.mkdir(exist_ok=True)
+
     host = None
     if args.address:
         host, _, _ = socket.gethostbyaddr(args.address)
 
-    aio.run(open_connection(host, args.port, path, args.retries))
+    aio.run(open_connection(host, args.port, path, args.workers, args.retries, args.timeout))
