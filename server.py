@@ -12,8 +12,7 @@ import serverbase as defs
 
 SERVER_PROMPT = """\
 1. List files on server
-2. Delete a file
-3. Kill Server
+2. Kill Server (any value besides 1 also works)
 Select an Option: """
 
 
@@ -31,7 +30,7 @@ async def server_session(direct: Path):
         elif option == '2':
             pass
         else:
-            print('exiting server')
+            print('Exiting server')
             break
 
 
@@ -157,12 +156,13 @@ def default_logger(log: logging.Logger):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(filename='server.log', format="%(name)s:%(levelname)s: %(message)s", level=logging.DEBUG)
+    logging.getLogger('asyncio').setLevel(logging.WARNING)
     log = default_logger(logging.getLogger("server"))
 
     args = ArgumentParser("creates a server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--dir", default='', help="the directory to where the server hosts files")
+    args.add_argument("-l", "--log", default='server.log', help="the file to write log info to")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port to run the server on")
     args = args.parse_args()
 
@@ -171,7 +171,16 @@ if __name__ == "__main__":
         args = defs.read_config(args.config, {
             'dir': '',
             'port': 8888,
+            'log': 'server.log'
         })
+
+    log_loc = Path(f'./{args.log}')
+    log_settings = {'format': "%(name)s:%(levelname)s: %(message)s", 'level': logging.DEBUG}
+    if not log_loc.exists() or log_loc.is_file():
+        logging.basicConfig(filename=log_loc, **log_settings)
+    else:
+        # just use stdout
+        logging.basicConfig(**log_settings)
 
     path = Path(f'./{args.dir}') # ensure relative path
     path.mkdir(exist_ok=True)

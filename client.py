@@ -14,7 +14,7 @@ import serverbase as defs
 CLIENT_PROMPT = """\
 1. List files on server
 2. Download file
-3. Exit
+3. Exit (any value besides 1 or 2 also works)
 Select an Option: """
     
 
@@ -54,8 +54,8 @@ async def client_session(path: Path, pair: defs.StreamPair, retries: int):
                 elif option == '2':
                     await run_download(path, pair, retries)
                 else:
-                    if option and option!='3':
-                        logging.error("unknown command")
+                    # if option and option!='3':
+                    #     logging.error("unknown command")
                     print('closing client')
                     break
 
@@ -91,7 +91,7 @@ async def run_download(path: Path, pair: defs.StreamPair, retries: int):
     dirs = dirs.splitlines()
     selects = []
 
-    while len(selects) <= len(dirs):
+    while len(selects) <= len(dirs): # file selection
         if len(dirs) == 1:
             selects.append(dirs[0])
             break
@@ -190,6 +190,12 @@ async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, re
     writer.write(f'{filename}\n'.encode())
     await writer.drain()
 
+    filepath = f'{path.name}/{filename}'
+    dup_mod = 1
+    while (p := Path(filepath)).exists():
+        filepath = f'{path.name}/{p.stem}({dup_mod}){"".join(p.suffixes)}'
+        dup_mod += 1
+
     got_file = False
     num_tries = 0
     while not got_file and num_tries < retries:
@@ -198,7 +204,7 @@ async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, re
             writer.write(f'{defs.RETRY}\n'.encode())
             await writer.drain()
 
-        got_file, byte_amnt = await receive_file(f'{path.name}/{filename}', reader)
+        got_file, byte_amnt = await receive_file(filepath, reader)
         num_tries += 1
 
         writer.write(f'{byte_amnt}\n'.encode())
@@ -271,6 +277,7 @@ async def open_connection(host: str, port: int, path: Path, retries: int):
 
 if __name__ == "__main__":
     logging.basicConfig(format="%(levelname)s: %(message)s")
+    logging.getLogger('asyncio').setLevel(logging.WARNING)
     logging.getLogger().setLevel(logging.DEBUG)
 
     args = ArgumentParser("creates a client and connect a server")
