@@ -274,16 +274,26 @@ if __name__ == "__main__":
     logging.getLogger().setLevel(logging.DEBUG)
 
     args = ArgumentParser("creates a client and connect a server")
+    args.add_argument("-a", "--address", default=None, help="ip address of the server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--dir", default='', help="the client download folder")
-    args.add_argument("-i", "--address", default=None, help="ip address of the server")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port connect to the server")
     args.add_argument("-r", "--retries", type=int, default=3, help="amount of download retries on failure")
     args = args.parse_args()
 
-    # todo: account for config
+    if args.config:
+        # ignore other args is config is present
+        args = defs.read_config(args.config, {
+            'dir': '',
+            'address': None,
+            'port': 8888,
+            'retries': 3
+        })
+
     path = Path(f'./{args.dir}') # ensure relative path
     path.mkdir(exist_ok=True)
-    host = socket.gethostbyaddr(args.address) if args.address else None 
+    host = None
+    if args.address:
+        host, _, _ = socket.gethostbyaddr(args.address)
 
     aio.run(open_connection(host, args.port, path, args.retries))

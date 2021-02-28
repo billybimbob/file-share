@@ -1,4 +1,4 @@
-from typing import Callable, Awaitable, Dict
+from typing import Callable, Awaitable
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -166,7 +166,13 @@ if __name__ == "__main__":
     args.add_argument("-p", "--port", type=int, default=8888, help="the port to run the server on")
     args = args.parse_args()
 
-    # todo: account for config
+    if args.config:
+        # ignore other args is config is present
+        args = defs.read_config(args.config, {
+            'dir': '',
+            'port': 8888,
+        })
+
     path = Path(f'./{args.dir}') # ensure relative path
     path.mkdir(exist_ok=True)
 
