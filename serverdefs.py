@@ -1,4 +1,3 @@
-from __future__ import annotations
 from typing import Dict, Any, Union, NamedTuple
 from collections import namedtuple
 
@@ -64,6 +63,8 @@ class Message(NamedTuple):
     @staticmethod
     async def write(writer: asyncio.StreamWriter, info: Union[str, bytes], error=False):
         """ Send message as bytes or also send an error """
+        if not isinstance(info, str) and not isinstance(info, bytes):
+            info = str(info)
         message = Message(info, error)
         writer.write(message.to_bytes())
         await writer.drain()

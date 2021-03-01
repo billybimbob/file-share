@@ -18,29 +18,6 @@ CLIENT_PROMPT = """\
 Select an Option: """
     
 
-async def checked_readline(reader: aio.StreamReader):
-    """
-    Calls readline on the reader, and assumes that if at eof,
-    an exception was passed
-    """
-    res = await reader.readline()
-    if reader.at_eof():
-        raise RuntimeError(res.decode())
-    else:
-        return res
-
-
-async def checked_read(reader: aio.StreamReader, n: int):
-    """
-    Calls read on the reader, and assumes that if at eof,
-    an exception was passed
-    """
-    res = await reader.read(n)
-    if reader.at_eof():
-        raise RuntimeError(res.decode())
-    else:
-        return res
-
 
 async def client_session(
     path: Path, sockets: List[defs.StreamPair], retries: int, timeout: int
@@ -134,15 +111,16 @@ async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue, retri
         if choice.startswith('n'):
             break
 
-    if len(selects) == 1:
+    if len(selects) <= 1:
         run_parallel = False
     else:
-        run_parallel = input("do you want to run the download serially? ")
-        run_parallel = run_parallel.startswith('n')
+        run_parallel = input("do you want to run the download in parallel? ")
+        run_parallel = not run_parallel.startswith('n')
 
     start_time = time()
     try:
         if run_parallel:
+            # concurrent exec
             await aio.gather(*[
                 fetch_file_pooled(f, path, pool, retries) for f in selects
             ])
@@ -165,8 +143,7 @@ async def fetch_file(filename: str, path: Path, pair: defs.StreamPair, retries: 
 
     elapsed = time() - start_time
     logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
-    pair.writer.write(f'{elapsed}\n'.encode())
-    await pair.writer.drain()
+    await defs.Message.write(pair.writer, str(elapsed))
 
 
 
@@ -178,8 +155,7 @@ async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue, retri
 
     elapsed = time() - start_time
     logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
-    pair.writer.write(f'{elapsed}\n'.encode())
-    await pair.writer.drain()
+    await defs.Message.write(pair.writer, str(elapsed))
 
     sockets.put_nowait(pair) # should never be > maxsize
 
@@ -189,13 +165,8 @@ async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, re
     """ Runs multiple attempts to download a file from the server """
     reader, writer = pair
     await defs.Message.write(writer, defs.DOWNLOAD)
-    # writer.write(f'{defs.DOWNLOAD}\n'.encode())
-    # await writer.drain()
 
-    # writer.write(f'{filename}\n'.encode())
-    # await writer.drain()
     await defs.Message.write(writer, filename)
-
     filepath = path.joinpath(filename)
 
     stem = filepath.stem
@@ -210,17 +181,13 @@ async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, re
     while not got_file and num_tries < retries:
         if num_tries > 0:
             logging.info(f"retrying {filename} download")
-            writer.write(f'{defs.RETRY}\n'.encode())
-            await writer.drain()
+            await defs.Message.write(writer, defs.RETRY)
 
-        got_file, byte_amnt = await receive_file(filepath, reader)
+        got_file, byte_amt = await receive_file(filepath, reader)
+        await defs.Message.write(writer, str(byte_amt))
         num_tries += 1
-
-        writer.write(f'{byte_amnt}\n'.encode())
-        await writer.drain()
     
-    writer.write(f'{defs.SUCCESS}\n'.encode())
-    await writer.drain()
+    await defs.Message.write(writer, defs.SUCCESS)
 
 
 
@@ -231,12 +198,11 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
 
     # expect the checksum to be sent first
     checksum = await defs.Message.read_short(reader, False)
-    # checksum = await checked_readline(reader)
-    # checksum = checksum.decode().strip()
 
-    with open(filepath, 'w+b') as f: # overrides existing
+    with open(filepath, 'w+b') as f:
         while True:
-            chunk = await checked_read(reader, defs.MAX_PAYLOAD)
+            # no messages since each file chunk is part of same "message"
+            chunk = await reader.read(defs.MAX_PAYLOAD)
             f.write(chunk)
             total_bytes += len(chunk)
             if len(chunk) < defs.MAX_PAYLOAD:
@@ -260,12 +226,8 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
 
 
 
-
 async def receive_dirs(reader: aio.StreamReader) -> str:
     """ Attempt to read multiple lines of file names from the reader """
-    # file_names = await checked_read(reader, defs.MAX_PAYLOAD)
-    # file_names = file_names.decode()
-    # return file_names
     return await defs.Message.read_short(reader)
 
 
@@ -276,7 +238,7 @@ def process_args(address: str, num_sockets: int, path: str) -> Tuple[str, int, P
         # should be loopback
         host = socket.gethostname()
     else:
-        host, _, _ = socket.gethostbyaddr(args.address)
+        host, _, _ = socket.gethostbyaddr(address)
 
     if num_sockets <= 1:
         num_sockets = 2
