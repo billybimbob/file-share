@@ -44,7 +44,8 @@ class Message(NamedTuple):
         else:
             messenger = Message.full
 
-        return messenger.pack(encoded, self.is_exception)
+        packed = messenger.pack(encoded, self.is_exception)
+        return packed
 
 
     def unwrap(self, decode: bool=True) -> Union[str, bytes]:
@@ -63,8 +64,6 @@ class Message(NamedTuple):
     @staticmethod
     async def write(writer: asyncio.StreamWriter, info: Union[str, bytes], error: bool=False):
         """ Send message as bytes or also send an error """
-        if not isinstance(info, str): # and not isinstance(info, bytes):
-            info = str(info)
         message = Message(info, error)
         writer.write(message.to_bytes())
         await writer.drain()

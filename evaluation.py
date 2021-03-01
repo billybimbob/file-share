@@ -24,6 +24,13 @@ async def stop_server(server: proc.Process):
     await server.communicate('\n'.encode())
 
 
+async def run_downloads(server: proc.Process, clients: List[proc.Process]):
+    client_input = f'2\n{"1\n\n" * 10}\n'.encode() # 10 threads
+    await aio.gather(*[
+        c.communicate(client_input) for c in clients
+    ])
+
+
 async def create_clients(num_clients: int) -> List[proc.Process]:
     clients: List[proc.Process] = []
     for i in range(num_clients):

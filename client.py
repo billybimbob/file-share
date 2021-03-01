@@ -75,7 +75,7 @@ async def list_dir(pair: defs.StreamPair):
 
 
 
-async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue[defs.StreamPair], retries: int):
+async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue, retries: int):
     """ Runs and selects files to download from the server """
     await defs.Message.write(pair.writer, defs.GET_FILES)
     # pair.writer.write(f'{defs.GET_FILES}\n'.encode())
@@ -147,10 +147,10 @@ async def fetch_file(filename: str, path: Path, pair: defs.StreamPair, retries: 
 
 
 
-async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue[defs.StreamPair], retries: int):
+async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue, retries: int):
     """ Download a file from the server with on of the pooled sockets """
     start_time = time()
-    pair = await sockets.get()
+    pair: defs.StreamPair = await sockets.get()
     await receive_file_loop(filename, path, pair, retries)
 
     elapsed = time() - start_time
@@ -198,6 +198,7 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
 
     # expect the checksum to be sent first
     checksum = await defs.Message.read_short(reader, False)
+    checksum = cast(bytes, checksum)
 
     with open(filepath, 'w+b') as f:
         while True:
@@ -214,9 +215,10 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
         local_checksum = hashlib.md5()
         for line in f:
             local_checksum.update(line)
-        local_checksum = local_checksum.digest()
 
+        local_checksum = local_checksum.digest()
         checksum_passed = local_checksum == checksum
+
         if checksum_passed:
             logging.info("checksum passed")
         else:
