@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, NamedTuple
 from collections import namedtuple
 
 from pathlib import Path
@@ -6,10 +6,10 @@ from configparser import ConfigParser
 from argparse import Namespace
 
 import sys
+import struct
 import asyncio
 
-
-CHUNK_SIZE = 1024
+MAX_PAYLOAD = 1024
 
 #region request constants
 
@@ -20,11 +20,42 @@ RETRY = 'retry'
 
 #endregion
 
-StreamPair = namedtuple('StreamPair', ['reader', 'writer'])
+
+#region message passing
+
+messenger = struct.Struct("?1023s")
+MESSAGE_SIZE = messenger.size
+MAX_PAYLOAD = MESSAGE_SIZE-1 # leave one byte for bool
+
+class Message(NamedTuple):
+    """ Information that is passed between socket streams """
+    message: str
+    is_exception: bool = False
+
+    def to_bytes(self) -> bytes:
+        """ Convert message in byte, struct form for streams """
+        return messenger.pack(self.is_exception, self.message.encode())
+
+
+def unpack_to_message(bytes: bytes) -> Message:
+    """
+    Take a stream of bytes and try to convert to a message. If the bytes
+    are not in the correct format, this will throw an error
+    """
+    exception, payload = messenger.unpack(bytes)
+    return Message(payload.decode().rstrip('\x00'), exception)
+
+#endregion
+
+
+class StreamPair(NamedTuple):
+    """ Stream pairing """
+    reader: asyncio.StreamReader
+    writer: asyncio.StreamWriter
 
 
 async def ainput(prompt: str) -> str:
-    """Async version of user input"""
+    """ Async version of user input """
 
     await asyncio.get_event_loop().run_in_executor(
         None,
@@ -44,10 +75,7 @@ def shallow_obj(map: Dict) -> object:
 
 
 def read_config(filename: str) -> Dict[str, Any]:
-    """
-    Parse an ini file into a Python object where the attributes are
-    the arguments, similar to the Namespace object in argparse
-    """
+    """ Parse an ini file into a dictionary """
     if not Path(filename).exists():
         raise IOError("Config file does not exist")
 
@@ -65,7 +93,7 @@ def read_config(filename: str) -> Dict[str, Any]:
 
 
 def merge_config_args(args: Namespace) -> Dict[str, Any]:
-    """If config file specified, merge in config arguments as a dictionary"""
+    """ If config file specified, merge in config arguments as a dictionary """
     if not args.config:
         return vars(args)
     else:

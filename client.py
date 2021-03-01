@@ -42,10 +42,12 @@ async def checked_read(reader: aio.StreamReader, n: int):
         return res
 
 
-async def client_session(path: Path, sockets: List[defs.StreamPair], retries: int, timeout: int):
-    """Procedure on how the client interacts with the server"""
-    logging.info('connected client')
+async def client_session(
+    path: Path, sockets: List[defs.StreamPair], retries: int, timeout: int
+):
+    """ Procedure on how the client interacts with the server """
 
+    logging.info('connected client')
     pair = sockets[0]
     pool = aio.Queue(len(sockets)-1)
     for s in sockets[1:]:
@@ -87,7 +89,7 @@ async def client_session(path: Path, sockets: List[defs.StreamPair], retries: in
 
 
 async def list_dir(pair: defs.StreamPair):
-    """Fetches and prints the files from the server"""
+    """ Fetches and prints the files from the server """
     pair.writer.write(f'{defs.GET_FILES}\n'.encode())
     await pair.writer.drain()
 
@@ -98,7 +100,7 @@ async def list_dir(pair: defs.StreamPair):
 
 
 async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue, retries: int):
-    """Runs and selects files to download from the server"""
+    """ Runs and selects files to download from the server """
     pair.writer.write(f'{defs.GET_FILES}\n'.encode())
     await pair.writer.drain()
 
@@ -157,7 +159,7 @@ async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue, retri
 
 
 async def fetch_file(filename: str, path: Path, pair: defs.StreamPair, retries: int):
-    """Basic form of timing and downloading from the server"""
+    """ Basic form of timing and downloading from the server """
     start_time = time()
     await receive_file_loop(filename, path, pair, retries)
 
@@ -169,7 +171,7 @@ async def fetch_file(filename: str, path: Path, pair: defs.StreamPair, retries: 
 
 
 async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue, retries: int):
-    """Download a file from the server with on of the pooled sockets"""
+    """ Download a file from the server with on of the pooled sockets """
     start_time = time()
     pair = await sockets.get()
     await receive_file_loop(filename, path, pair, retries)
@@ -184,7 +186,7 @@ async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue, retri
 
 
 async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, retries: int):
-    """Runs multiple attempts to download a file from the server"""
+    """ Runs multiple attempts to download a file from the server """
     reader, writer = pair
     writer.write(f'{defs.DOWNLOAD}\n'.encode())
     await writer.drain()
@@ -221,7 +223,7 @@ async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, re
 
 
 async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, int]:
-    """ Used by the client side to download and verify correctness of download"""
+    """ Used by the client side to download and verify correctness of download """
     checksum_passed = False
     total_bytes = 0
 
@@ -231,10 +233,10 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
 
     with open(filepath, 'w+b') as f: # overrides existing
         while True:
-            chunk = await checked_read(reader, defs.CHUNK_SIZE)
+            chunk = await checked_read(reader, defs.MAX_PAYLOAD)
             f.write(chunk)
             total_bytes += len(chunk)
-            if len(chunk) < defs.CHUNK_SIZE:
+            if len(chunk) < defs.MAX_PAYLOAD:
                 break
 
         logging.info(f'read {(total_bytes / 1000):.2f} KB')
@@ -257,15 +259,15 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
 
 
 async def receive_dirs(reader: aio.StreamReader) -> str:
-    """Attempt to read multiple lines of file names from the reader"""
-    file_names = await checked_read(reader, defs.CHUNK_SIZE)
+    """ Attempt to read multiple lines of file names from the reader """
+    file_names = await checked_read(reader, defs.MAX_PAYLOAD)
     file_names = file_names.decode()
     return file_names
 
 
 
 def process_args(address: str, num_sockets: int, path: str) -> Tuple[str, int, Path]:
-    """Normalize and parse arguments"""
+    """ Normalize and parse arguments """
     if address is None:
         # should be loopback
         host = socket.gethostname()
@@ -283,13 +285,14 @@ def process_args(address: str, num_sockets: int, path: str) -> Tuple[str, int, P
 
 
 async def open_connection(
-        address: str, port: int, directory: str, workers: int, retries: int, timeout: int,
-        *args, **kwargs):
-    """Attempts to connect to a server with the given args"""
+    address: str, port: int, directory: str, workers: int, retries: int,
+    timeout: int, *args, **kwargs
+):
+    """ Attempts to connect to a server with the given args """
     try:
-        sockets: List[defs.StreamPair] = []
         host, num_sockets, path = process_args(address, workers, directory)
 
+        sockets: List[defs.StreamPair] = []
         for _ in range(num_sockets):
             pair = await aio.open_connection(host, port)
             pair = defs.StreamPair(*pair)

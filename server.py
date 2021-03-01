@@ -17,7 +17,7 @@ Select an Option: """
 
 
 async def server_session(direct: Path):
-    """Cli for the server"""
+    """ Cli for the server """
     while option := await defs.ainput(SERVER_PROMPT):
         option = option.rstrip()
         
@@ -33,8 +33,12 @@ async def server_session(direct: Path):
 
 
 
-async def server_connection(path: Path, reader: aio.StreamReader, writer: aio.StreamWriter):
-    """Callback called for the server wheneven a connection is established with a client"""
+async def server_connection(path: Path, pair: defs.StreamPair):
+    """
+    Callback called for the server wheneven a connection is established
+    with a client
+    """
+    reader, writer = pair 
     addr, _, _, _ = writer.get_extra_info('peername')
     remote = socket.gethostbyaddr(addr)
 
@@ -58,7 +62,6 @@ async def server_connection(path: Path, reader: aio.StreamReader, writer: aio.St
 
     except EOFError:
         pass
-
     except IOError as e:
         logger.error(e)
         writer.write(str(e).encode())
@@ -73,14 +76,22 @@ async def server_connection(path: Path, reader: aio.StreamReader, writer: aio.St
 
 
 def path_connection(path: Path) -> Callable[[aio.StreamReader, aio.StreamReader], Awaitable]:
-    """Creates a stream callback, and specifying the path for the server directory"""
-    return lambda reader, writer: server_connection(path, reader, writer)
+    """
+    Creates a stream callback, and specifying the path for the server directory
+    """
+    return lambda reader, writer: \
+        server_connection(path, defs.StreamPair(reader, writer))
 
 
-async def send_file_loop(path: Path, pair: defs.StreamPair, logger: logging.Logger):
-    """Runs multiple attempts to send a file based on the receiver response"""
+async def send_file_loop(
+    path: Path, pair: defs.StreamPair, logger: logging.Logger
+):
+    """
+    Runs multiple attempts to send a file based on the receiver response
+    """
     logger.info("waiting for selected file")
     reader, writer = pair
+
     filename = await reader.readuntil()
     filename = filename.decode().rstrip()
     filename = f'{path.name}/{filename}'
@@ -99,12 +110,14 @@ async def send_file_loop(path: Path, pair: defs.StreamPair, logger: logging.Logg
 
     elapsed = await reader.readline()
     elapsed = float(elapsed.decode().strip())
-    logger.debug(f'transfer of {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs')
+    logger.debug(
+        f'transfer of {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs'
+    )
 
 
 
 async def send_file(filepath: str, writer: aio.StreamWriter, logger: logging.Logger):
-    """Used by server side to send file contents to a given client"""
+    """ Used by server side to send file contents to a given client """
     logger.debug(f'trying to send file {filepath}')
 
     with open(filepath, 'rb') as f:
@@ -124,7 +137,7 @@ async def send_file(filepath: str, writer: aio.StreamWriter, logger: logging.Log
 
 
 async def list_dir(direct: Path, writer: aio.StreamWriter, log: logging.Logger):
-    """Sends the server directory files to the client"""
+    """ Sends the server directory files to the client """
     log.info("listing dir")
     file_list = '\n'.join(d.name for d in direct.iterdir() if d.is_file())
     writer.write(file_list.encode())
@@ -133,7 +146,7 @@ async def list_dir(direct: Path, writer: aio.StreamWriter, log: logging.Logger):
 
 
 def init_log(log: str):
-    """Specifies logging format and location"""
+    """ Specifies logging format and location """
     log = Path(f'./{log}')
     log_settings = {'format': "%(name)s:%(levelname)s: %(message)s", 'level': logging.DEBUG}
 
@@ -145,7 +158,7 @@ def init_log(log: str):
 
 
 async def start_server(port: int, directory: str, log: str, *args, **kwargs):
-    """Switch to convert the command args to a given server or client"""
+    """ Switch to convert the command args to a given server or client """
     host = socket.gethostname() # should be loopback
 
     path = Path(f'./{directory}') # ensure relative path
@@ -168,7 +181,7 @@ async def start_server(port: int, directory: str, log: str, *args, **kwargs):
 
 
 def default_logger(log: logging.Logger):
-    """Settings for all created loggers"""
+    """ Settings for all created loggers """
     log.setLevel(logging.DEBUG)
     return log
 
