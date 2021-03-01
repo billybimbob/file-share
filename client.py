@@ -247,7 +247,7 @@ def process_args(address: str, num_sockets: int, directory: str) -> Tuple[str, i
         num_sockets = 2
 
     path = Path(f'./{directory}') # ensure relative path
-    path.mkdir(exist_ok=True)
+    path.mkdir(exist_ok=True, parents=True)
 
     return (host, num_sockets, path)
 

@@ -1,4 +1,4 @@
-from typing import Callable, Coroutine, cast
+from typing import Any, Callable, Coroutine, cast
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -74,7 +74,7 @@ async def server_connection(path: Path, pair: defs.StreamPair):
 
 
 def path_connection(path: Path) \
-    -> Callable[[aio.StreamReader, aio.StreamWriter], Coroutine[None, None, None]]:
+    -> Callable[[aio.StreamReader, aio.StreamWriter], Coroutine[Any, Any, None]]:
     """
     Creates a stream callback, and specifying the path for the server directory
     """
@@ -146,6 +146,7 @@ async def send_file(filepath: Path, writer: aio.StreamWriter, logger: logging.Lo
 def init_log(log: str):
     """ Specifies logging format and location """
     log_path = Path(f'./{log}')
+    log_path.parent.mkdir(exist_ok=True, parents=True)
     log_settings = {'format': "%(name)s:%(levelname)s: %(message)s", 'level': logging.DEBUG}
 
     if not log_path.exists() or log_path.is_file():
@@ -160,7 +161,7 @@ async def start_server(port: int, directory: str, log: str, *args, **kwargs):
     host = socket.gethostname() # should be loopback
 
     path = Path(f'./{directory}') # ensure relative path
-    path.mkdir(exist_ok=True)
+    path.mkdir(exist_ok=True, parents=True)
 
     init_log(log)
     logger = default_logger(logging.getLogger("server"))
