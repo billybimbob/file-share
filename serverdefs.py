@@ -1,4 +1,5 @@
-from typing import Dict, Any, NamedTuple
+from __future__ import annotations
+from typing import Dict, Any, Union, NamedTuple
 from collections import namedtuple
 
 from pathlib import Path
@@ -23,27 +24,67 @@ RETRY = 'retry'
 
 #region message passing
 
-messenger = struct.Struct("?1023s")
-MESSAGE_SIZE = messenger.size
-MAX_PAYLOAD = MESSAGE_SIZE-1 # leave one byte for bool
-
 class Message(NamedTuple):
     """ Information that is passed between socket streams """
-    message: str
+    message: Union[str, bytes]
     is_exception: bool = False
 
+    full = struct.Struct(f"!{MAX_PAYLOAD-1}s?") # one byte for the bool
+    short = struct.Struct("!255p?")
+
+
     def to_bytes(self) -> bytes:
-        """ Convert message in byte, struct form for streams """
-        return messenger.pack(self.is_exception, self.message.encode())
+        """ Convert message to byte, struct form for streams """
+        if isinstance(self.message, bytes):
+            encoded = self.message
+        else:
+            encoded = self.message.encode()
+
+        if len(encoded) < Message.short.size:
+            messenger = Message.short
+        else:
+            messenger = Message.full
+
+        return messenger.pack(encoded, self.is_exception)
 
 
-def unpack_to_message(bytes: bytes) -> Message:
-    """
-    Take a stream of bytes and try to convert to a message. If the bytes
-    are not in the correct format, this will throw an error
-    """
-    exception, payload = messenger.unpack(bytes)
-    return Message(payload.decode().rstrip('\x00'), exception)
+    def unwrap(self, decode: bool=True) -> str:
+        """ Get the message, or raise it as an exception """
+        if isinstance(self.message, bytes) and decode:
+            decoded = self.message.decode().rstrip('\x00')
+        else:
+            decoded = self.message
+
+        if not self.is_exception:
+            return decoded
+        else:
+            raise RuntimeError(decoded)
+
+
+    @staticmethod
+    async def write(writer: asyncio.StreamWriter, info: Union[str, bytes], error=False):
+        """ Send message as bytes or also send an error """
+        message = Message(info, error)
+        writer.write(message.to_bytes())
+        await writer.drain()
+
+
+    @staticmethod
+    async def read_short(reader: asyncio.StreamReader, decode: bool=True) -> Union[str, bytes]:
+        """ Get a short message from the stream """
+        data = await reader.readexactly(Message.short.size)
+        unpack = Message.short.unpack(data)
+
+        return Message(*unpack).unwrap(decode)
+
+
+    @staticmethod
+    async def read_full(reader: asyncio.StreamReader, decode: bool=True) -> Union[str, bytes]:
+        """ Get a long message from the stream """
+        data = await reader.readexactly(Message.full.size)
+        unpack = Message.full.unpack(data)
+
+        return Message(*unpack).unwrap(decode)
 
 #endregion
 

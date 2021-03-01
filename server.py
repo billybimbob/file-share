@@ -46,10 +46,10 @@ async def server_connection(path: Path, pair: defs.StreamPair):
     default_logger(logger)
     logger.debug(f"connected to {remote}")
 
+    pair = defs.StreamPair(reader, writer)
     try:
-        pair = defs.StreamPair(reader, writer)
-        while request := await reader.readline():
-            request = request.decode().strip()
+        while request := await defs.Message.read_short(reader):
+            # request = request.decode().strip()
 
             if request == defs.GET_FILES:
                 await list_dir(path, writer, logger)
@@ -83,6 +83,17 @@ def path_connection(path: Path) -> Callable[[aio.StreamReader, aio.StreamReader]
         server_connection(path, defs.StreamPair(reader, writer))
 
 
+
+async def list_dir(direct: Path, writer: aio.StreamWriter, log: logging.Logger):
+    """ Sends the server directory files to the client """
+    log.info("listing dir")
+    file_list = '\n'.join(d.name for d in direct.iterdir() if d.is_file())
+    await defs.Message.write(writer, file_list)
+    # writer.write(file_list.encode())
+    # await writer.drain()
+
+
+
 async def send_file_loop(
     path: Path, pair: defs.StreamPair, logger: logging.Logger
 ):
@@ -92,8 +103,9 @@ async def send_file_loop(
     logger.info("waiting for selected file")
     reader, writer = pair
 
-    filename = await reader.readuntil()
-    filename = filename.decode().rstrip()
+    filename = await defs.Message.read_short(reader)
+    # filename = await reader.readuntil()
+    # filename = filename.decode().rstrip()
     filename = f'{path.name}/{filename}'
 
     tot_bytes = 0
@@ -124,24 +136,16 @@ async def send_file(filepath: str, writer: aio.StreamWriter, logger: logging.Log
         checksum = hashlib.md5()
         for line in f:
             checksum.update(line)
-        checksum = checksum.hexdigest()
+        checksum = checksum.digest()
 
         logger.info(f'checksum of: {checksum}')
-        writer.write(f'{checksum}\n'.encode())
-        await writer.drain()
+        await defs.Message.write(writer, checksum)
+        # writer.write(f'{checksum}\n'.encode())
+        # await writer.drain()
 
         f.seek(0)
         writer.writelines(f) # don't need to encode
         await writer.drain()
-
-
-
-async def list_dir(direct: Path, writer: aio.StreamWriter, log: logging.Logger):
-    """ Sends the server directory files to the client """
-    log.info("listing dir")
-    file_list = '\n'.join(d.name for d in direct.iterdir() if d.is_file())
-    writer.write(file_list.encode())
-    await writer.drain()
 
 
 

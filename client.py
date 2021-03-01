@@ -90,8 +90,7 @@ async def client_session(
 
 async def list_dir(pair: defs.StreamPair):
     """ Fetches and prints the files from the server """
-    pair.writer.write(f'{defs.GET_FILES}\n'.encode())
-    await pair.writer.drain()
+    await defs.Message.write(pair.writer, defs.GET_FILES)
 
     dirs = await receive_dirs(pair.reader)
     print("The files on the server are:")
@@ -101,8 +100,9 @@ async def list_dir(pair: defs.StreamPair):
 
 async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue, retries: int):
     """ Runs and selects files to download from the server """
-    pair.writer.write(f'{defs.GET_FILES}\n'.encode())
-    await pair.writer.drain()
+    await defs.Message.write(pair.writer, defs.GET_FILES)
+    # pair.writer.write(f'{defs.GET_FILES}\n'.encode())
+    # await pair.writer.drain()
 
     dirs = await receive_dirs(pair.reader)
     dirs = dirs.splitlines()
@@ -188,13 +188,15 @@ async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue, retri
 async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, retries: int):
     """ Runs multiple attempts to download a file from the server """
     reader, writer = pair
-    writer.write(f'{defs.DOWNLOAD}\n'.encode())
-    await writer.drain()
+    await defs.Message.write(writer, defs.DOWNLOAD)
+    # writer.write(f'{defs.DOWNLOAD}\n'.encode())
+    # await writer.drain()
 
-    writer.write(f'{filename}\n'.encode())
-    await writer.drain()
+    # writer.write(f'{filename}\n'.encode())
+    # await writer.drain()
+    await defs.Message.write(writer, filename)
 
-    filepath = Path(f'{path}/{filename}')
+    filepath = path.joinpath(filename)
 
     stem = filepath.stem
     exts = "".join(filepath.suffixes)
@@ -228,8 +230,9 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
     total_bytes = 0
 
     # expect the checksum to be sent first
-    checksum = await checked_readline(reader)
-    checksum = checksum.decode().strip()
+    checksum = await defs.Message.read_short(reader, False)
+    # checksum = await checked_readline(reader)
+    # checksum = checksum.decode().strip()
 
     with open(filepath, 'w+b') as f: # overrides existing
         while True:
@@ -245,7 +248,7 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
         local_checksum = hashlib.md5()
         for line in f:
             local_checksum.update(line)
-        local_checksum = local_checksum.hexdigest()
+        local_checksum = local_checksum.digest()
 
         checksum_passed = local_checksum == checksum
         if checksum_passed:
@@ -260,9 +263,10 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
 
 async def receive_dirs(reader: aio.StreamReader) -> str:
     """ Attempt to read multiple lines of file names from the reader """
-    file_names = await checked_read(reader, defs.MAX_PAYLOAD)
-    file_names = file_names.decode()
-    return file_names
+    # file_names = await checked_read(reader, defs.MAX_PAYLOAD)
+    # file_names = file_names.decode()
+    # return file_names
+    return await defs.Message.read_short(reader)
 
 
 
@@ -271,7 +275,7 @@ def process_args(address: str, num_sockets: int, path: str) -> Tuple[str, int, P
     if address is None:
         # should be loopback
         host = socket.gethostname()
-    else :
+    else:
         host, _, _ = socket.gethostbyaddr(args.address)
 
     if num_sockets <= 1:
@@ -301,7 +305,8 @@ async def open_connection(
         await client_session(path, sockets, retries, timeout)
 
     except Exception as e:
-        logging.error(f"connection error {e}")
+        logging.error(e.with_traceback())
+
     finally:
         logging.info('ending connection')
 
