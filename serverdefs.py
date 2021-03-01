@@ -47,7 +47,7 @@ class Message(NamedTuple):
         return messenger.pack(encoded, self.is_exception)
 
 
-    def unwrap(self, decode: bool=True) -> str:
+    def unwrap(self, decode: bool=True) -> Union[str, bytes]:
         """ Get the message, or raise it as an exception """
         if isinstance(self.message, bytes) and decode:
             decoded = self.message.decode().rstrip('\x00')
@@ -61,9 +61,9 @@ class Message(NamedTuple):
 
 
     @staticmethod
-    async def write(writer: asyncio.StreamWriter, info: Union[str, bytes], error=False):
+    async def write(writer: asyncio.StreamWriter, info: Union[str, bytes], error: bool=False):
         """ Send message as bytes or also send an error """
-        if not isinstance(info, str) and not isinstance(info, bytes):
+        if not isinstance(info, str): # and not isinstance(info, bytes):
             info = str(info)
         message = Message(info, error)
         writer.write(message.to_bytes())
@@ -109,7 +109,7 @@ async def ainput(prompt: str) -> str:
     )
 
 
-def shallow_obj(map: Dict) -> object:
+def shallow_obj(map: Dict[str, Any]) -> object:
     """
     Convert a dictionary into a python object, where each key is an attribute
     """

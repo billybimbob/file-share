@@ -1,4 +1,4 @@
-from typing import Tuple, List
+from typing import Tuple, List, cast
 from argparse import ArgumentParser
 from pathlib import Path
 from time import time
@@ -26,7 +26,7 @@ async def client_session(
 
     logging.info('connected client')
     pair = sockets[0]
-    pool = aio.Queue(len(sockets)-1)
+    pool: aio.Queue[defs.StreamPair] = aio.Queue(len(sockets)-1)
     for s in sockets[1:]:
         pool.put_nowait(s)
 
@@ -75,7 +75,7 @@ async def list_dir(pair: defs.StreamPair):
 
 
 
-async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue, retries: int):
+async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue[defs.StreamPair], retries: int):
     """ Runs and selects files to download from the server """
     await defs.Message.write(pair.writer, defs.GET_FILES)
     # pair.writer.write(f'{defs.GET_FILES}\n'.encode())
@@ -147,7 +147,7 @@ async def fetch_file(filename: str, path: Path, pair: defs.StreamPair, retries: 
 
 
 
-async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue, retries: int):
+async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue[defs.StreamPair], retries: int):
     """ Download a file from the server with on of the pooled sockets """
     start_time = time()
     pair = await sockets.get()
@@ -228,11 +228,12 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
 
 async def receive_dirs(reader: aio.StreamReader) -> str:
     """ Attempt to read multiple lines of file names from the reader """
-    return await defs.Message.read_short(reader)
+    dirs = await defs.Message.read_short(reader)
+    return cast(str, dirs)
 
 
 
-def process_args(address: str, num_sockets: int, path: str) -> Tuple[str, int, Path]:
+def process_args(address: str, num_sockets: int, directory: str) -> Tuple[str, int, Path]:
     """ Normalize and parse arguments """
     if address is None:
         # should be loopback
@@ -243,7 +244,7 @@ def process_args(address: str, num_sockets: int, path: str) -> Tuple[str, int, P
     if num_sockets <= 1:
         num_sockets = 2
 
-    path = Path(f'./{path}') # ensure relative path
+    path = Path(f'./{directory}') # ensure relative path
     path.mkdir(exist_ok=True)
 
     return (host, num_sockets, path)
@@ -267,7 +268,7 @@ async def open_connection(
         await client_session(path, sockets, retries, timeout)
 
     except Exception as e:
-        logging.error(e.with_traceback())
+        logging.error(e)
 
     finally:
         logging.info('ending connection')

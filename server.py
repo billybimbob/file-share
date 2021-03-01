@@ -1,4 +1,4 @@
-from typing import Callable, Awaitable
+from typing import Callable, Coroutine, cast
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -73,7 +73,8 @@ async def server_connection(path: Path, pair: defs.StreamPair):
 
 
 
-def path_connection(path: Path) -> Callable[[aio.StreamReader, aio.StreamReader], Awaitable]:
+def path_connection(path: Path) \
+    -> Callable[[aio.StreamReader, aio.StreamWriter], Coroutine[None, None, None]]:
     """
     Creates a stream callback, and specifying the path for the server directory
     """
@@ -100,13 +101,14 @@ async def send_file_loop(
     reader, writer = pair
 
     filename = await defs.Message.read_short(reader)
-    filename = path.joinpath(filename)
+    filename = cast(str, filename)
+    filepath = path.joinpath(filename)
 
     tot_bytes = 0
     should_send = True
 
     while should_send:
-        await send_file(filename, writer, logger)
+        await send_file(filepath, writer, logger)
 
         amt_read = await defs.Message.read_short(reader)
         tot_bytes += int(amt_read)
@@ -122,7 +124,7 @@ async def send_file_loop(
 
 
 
-async def send_file(filepath: str, writer: aio.StreamWriter, logger: logging.Logger):
+async def send_file(filepath: Path, writer: aio.StreamWriter, logger: logging.Logger):
     """ Used by server side to send file contents to a given client """
     logger.debug(f'trying to send file {filepath}')
 
@@ -143,10 +145,10 @@ async def send_file(filepath: str, writer: aio.StreamWriter, logger: logging.Log
 
 def init_log(log: str):
     """ Specifies logging format and location """
-    log = Path(f'./{log}')
+    log_path = Path(f'./{log}')
     log_settings = {'format': "%(name)s:%(levelname)s: %(message)s", 'level': logging.DEBUG}
 
-    if not log.exists() or log.is_file():
+    if not log_path.exists() or log_path.is_file():
         logging.basicConfig(filename=log, **log_settings)
     else: # just use stdout
         logging.basicConfig(**log_settings)
@@ -165,7 +167,7 @@ async def start_server(port: int, directory: str, log: str, *args, **kwargs):
 
     server = await aio.start_server(path_connection(path), host=host, port=port)
     async with server:
-        addr = server.sockets[0].getsockname()
+        addr: str = server.sockets[0].getsockname()
         logger.info(f'created server on {addr}, listening for clients')
 
         aio.create_task(server.serve_forever())
@@ -176,7 +178,7 @@ async def start_server(port: int, directory: str, log: str, *args, **kwargs):
  
 
 
-def default_logger(log: logging.Logger):
+def default_logger(log: logging.Logger) -> logging.Logger:
     """ Settings for all created loggers """
     log.setLevel(logging.DEBUG)
     return log

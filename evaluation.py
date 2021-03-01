@@ -4,39 +4,41 @@ from pathlib import Path
 
 import sys
 import asyncio as aio
+import asyncio.subprocess as proc
 import shlex
 
 PYTHON_CMD = "python" if sys.platform.startswith('win') else "python3"
 SERVERS = 'servers'
 
 
-async def start_server(file_size: str, log: str) -> aio.Process:
+async def start_server(file_size: str, log: str) -> proc.Process:
     server_dir = f'{SERVERS}/{file_size}'
     server = await aio.create_subprocess_exec(
         *shlex.split(f"{PYTHON_CMD} server.py -c configs/eval-server.ini -d {server_dir} -l {log}"),
-        stdin=aio.subprocess.PIPE
+        stdin=proc.PIPE
     )
 
     return server
 
-async def stop_server(server: aio.Process):
+async def stop_server(server: proc.Process):
     await server.communicate('\n'.encode())
 
 
-async def create_clients(num_clients: int) -> List[aio.Process]:
-    clients: List[aio.Process] = []
-    for i in num_clients:
+async def create_clients(num_clients: int) -> List[proc.Process]:
+    clients: List[proc.Process] = []
+    for i in range(num_clients):
         client = await aio.create_subprocess_exec(
-            *shlex.split(f"{PYTHON_CMD} client.py -c configs/eval-client.ini -d clients/{i}")
+            *shlex.split(f"{PYTHON_CMD} client.py -c configs/eval-client.ini -d clients/{i}"),
+            stdin=proc.PIPE
         )
         clients.append(client)
 
     return clients
 
 
-async def stop_clients(clients: List[aio.Process]):
+async def stop_clients(clients: List[proc.Process]):
     await aio.gather(*[
-        c.communicate('\n'.encode) for c in clients
+        c.communicate('\n'.encode()) for c in clients
     ])
 
 
