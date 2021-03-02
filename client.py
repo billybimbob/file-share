@@ -23,7 +23,6 @@ async def client_session(
     path: Path, sockets: List[defs.StreamPair], retries: int, timeout: int
 ):
     """ Procedure on how the client interacts with the server """
-
     logging.info('connected client')
     pair = sockets[0]
     pool: aio.Queue[defs.StreamPair] = aio.Queue(len(sockets)-1)
@@ -78,8 +77,6 @@ async def list_dir(pair: defs.StreamPair):
 async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue, retries: int):
     """ Runs and selects files to download from the server """
     await defs.Message.write(pair.writer, defs.GET_FILES)
-    # pair.writer.write(f'{defs.GET_FILES}\n'.encode())
-    # await pair.writer.drain()
 
     dirs = await receive_dirs(pair.reader)
     dirs = dirs.splitlines()
@@ -162,7 +159,7 @@ async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue, retri
 
 
 async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, retries: int):
-    """ Runs multiple attempts to download a file from the server """
+    """ Runs multiple attempts to download a file from the server if needed """
     reader, writer = pair
     await defs.Message.write(writer, defs.DOWNLOAD)
 
@@ -236,7 +233,8 @@ async def receive_dirs(reader: aio.StreamReader) -> str:
 
 
 
-def process_args(address: str, num_sockets: int, directory: str) -> Tuple[str, int, Path]:
+def process_args(user: str, address: str, num_sockets: int, directory: str) \
+    -> Tuple[str, str, int, Path]:
     """ Normalize and parse arguments """
     if address is None:
         # should be loopback
@@ -244,29 +242,33 @@ def process_args(address: str, num_sockets: int, directory: str) -> Tuple[str, i
     else:
         host, _, _ = socket.gethostbyaddr(address)
 
+    if user is None:
+        user = host
+
     if num_sockets <= 1:
         num_sockets = 2
 
     path = Path(f'./{directory}') # ensure relative path
     path.mkdir(exist_ok=True, parents=True)
 
-    return (host, num_sockets, path)
+    return (user, host, num_sockets, path)
 
 
 
 async def open_connection(
-    address: str, port: int, directory: str, workers: int, retries: int,
-    timeout: int, *args, **kwargs
+    user: str, address: str, port: int, directory: str, workers: int,
+    retries: int, timeout: int, *args, **kwargs
 ):
     """ Attempts to connect to a server with the given args """
     try:
-        host, num_sockets, path = process_args(address, workers, directory)
-
+        user, host, num_sockets, path = process_args(user, address, workers, directory)
         sockets: List[defs.StreamPair] = []
+
         for _ in range(num_sockets):
             pair = await aio.open_connection(host, port)
             pair = defs.StreamPair(*pair)
             sockets.append(pair)
+            await defs.Message.write(pair.writer, user)
 
         await client_session(path, sockets, retries, timeout)
 
@@ -290,6 +292,7 @@ if __name__ == "__main__":
     args.add_argument("-p", "--port", type=int, default=8888, help="the port connect to the server")
     args.add_argument("-r", "--retries", type=int, default=3, help="amount of download retries on failure")
     args.add_argument("-t", "--timeout", type=int, default=60, help="time in seconds of no activity til the client disconnects")
+    args.add_argument("-u", "--user", help="username of the client connecting")
     args.add_argument("-w", "--workers", type=int, default=2, help="max number of sockets that can be connected be connected to the server")
 
     args = args.parse_args()

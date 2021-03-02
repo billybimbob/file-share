@@ -4,6 +4,7 @@ __pycache__
 servers
 clients
 
+out*
 *ref*
 *dir*
 *.log

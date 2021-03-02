@@ -19,6 +19,9 @@ LOGS = 'logs'
 
 
 async def start_server(file_size: str, server_id: int) -> proc.Process:
+    """
+    Launches the server on a separate process with the specified log and directory
+    """
     server_dir = f'{SERVERS}/{file_size}'
     log = f'{LOGS}/{server_id}.log'
 
@@ -35,6 +38,7 @@ async def start_server(file_size: str, server_id: int) -> proc.Process:
 
 
 async def create_clients(num_clients: int) -> List[proc.Process]:
+    """ Creates a number of client processes """
     clients: List[proc.Process] = []
 
     for i in range(num_clients):
@@ -44,23 +48,26 @@ async def create_clients(num_clients: int) -> List[proc.Process]:
             shutil.rmtree(client_dir)
 
         client = await aio.create_subprocess_exec(
-            *shlex.split(f"{PYTHON_CMD} client.py -c {CONFIGS}/eval-client.ini -d {client_dir}"),
+            *shlex.split(f"{PYTHON_CMD} client.py -c {CONFIGS}/eval-client.ini -d {client_dir} -u client-{i}"),
             stdin=proc.PIPE
         )
+
         clients.append(client)
 
     return clients
 
 
 async def run_downloads(clients: List[proc.Process]):
-    all_files_in = "1\n\n" * 9
-    client_input = f'2\n{all_files_in}\n'.encode() # should be 10 files on each server
+    """ Passes input to the client processes to request downloads from the server """
+    all_files_in = "1\n\n" * 9 # should be 10 files on each server
+    client_input = f'2\n{all_files_in}\n'.encode()
     await aio.gather(*[
         c.communicate(client_input) for c in clients
     ])
 
 
 async def stop_procs(server: proc.Process, clients: List[proc.Process]):
+    """ Sends input to all the procs that should make them cleanly exit """
     await aio.gather(*[
         c.communicate('\n'.encode()) for c in clients
     ])
@@ -71,6 +78,7 @@ async def stop_procs(server: proc.Process, clients: List[proc.Process]):
 
 
 async def run_cycle(num_clients: int, file_size: str, repeat: int):
+    """ Manages the creation, running, and killing of server and client procs """
     for i in range(repeat):
         try:
             server = await start_server(file_size, i)
@@ -95,11 +103,8 @@ if __name__ == "__main__":
     args.add_argument("-r", "--repeat", type=int, default=2, help="the amount of repeated runs")
     args = args.parse_args()
 
-    try:
-        aio.run(run_cycle(
-            args.num_clients,
-            args.file_size,
-            args.repeat
-        ))
-    except:
-        print('error in run')
+    aio.run(run_cycle(
+        args.num_clients,
+        args.file_size,
+        args.repeat
+    ))

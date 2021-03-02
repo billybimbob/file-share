@@ -9,6 +9,8 @@ import sys
 import struct
 import asyncio
 
+
+# Max amount read for files
 CHUNK_SIZE = 1024
 
 #region request constants
@@ -28,7 +30,7 @@ class Message(NamedTuple):
     message: Union[str, bytes]
     is_exception: bool = False
 
-    header = struct.Struct("?I")
+    HEADER = struct.Struct("?I")
 
 
     def to_bytes(self) -> bytes:
@@ -39,7 +41,7 @@ class Message(NamedTuple):
             encoded = self.message.encode()
 
         size = len(encoded)
-        header = Message.header.pack(self.is_exception, size)
+        header = Message.HEADER.pack(self.is_exception, size)
 
         return header + encoded
 
@@ -67,10 +69,10 @@ class Message(NamedTuple):
 
     @staticmethod
     async def read(reader: asyncio.StreamReader, decode: bool=True) -> Union[str, bytes]:
-        """ Get a short message from the stream """
-        header = await reader.readexactly(Message.header.size)
+        """ Get and unwrap a message from the stream """
+        header = await reader.readexactly(Message.HEADER.size)
 
-        exception, size = Message.header.unpack(header)
+        exception, size = Message.HEADER.unpack(header)
         payload = await reader.readexactly(size)
 
         return Message(payload, exception).unwrap(decode)
@@ -84,7 +86,8 @@ class StreamPair(NamedTuple):
     writer: asyncio.StreamWriter
 
 
-async def ainput(prompt: str) -> str:
+
+async def ainput(prompt: str='') -> str:
     """ Async version of user input """
 
     await asyncio.get_event_loop().run_in_executor(
@@ -105,7 +108,7 @@ def shallow_obj(map: Dict[str, Any]) -> object:
 
 
 def read_config(filename: str) -> Dict[str, Any]:
-    """ Parse an ini file into a dictionary """
+    """ Parse an ini file into a dictionary, ignoring sections """
     if not Path(filename).exists():
         raise IOError("Config file does not exist")
 

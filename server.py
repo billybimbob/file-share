@@ -42,11 +42,14 @@ async def server_connection(path: Path, pair: defs.StreamPair):
     addr, _, _, _ = writer.get_extra_info('peername')
     remote = socket.gethostbyaddr(addr)
 
-    logger = logging.getLogger(remote[0])
-    default_logger(logger)
-    logger.debug(f"connected to {remote}")
+    # username = remote[0]
+    username = await defs.Message.read(reader)
+    username = cast(str, username)
 
-    pair = defs.StreamPair(reader, writer)
+    logger = logging.getLogger(username)
+    logger = default_logger(logger)
+    logger.debug(f"connected to {username}: {remote}")
+
     try:
         while request := await defs.Message.read(reader):
 
@@ -150,7 +153,7 @@ def init_log(log: str):
     """ Specifies logging format and location """
     log_path = Path(f'./{log}')
     log_path.parent.mkdir(exist_ok=True, parents=True)
-    log_settings = {'format': "%(name)s:%(levelname)s: %(message)s", 'level': logging.DEBUG}
+    log_settings = {'format': "%(levelname)s: %(name)s: %(message)s", 'level': logging.DEBUG}
 
     if not log_path.exists() or log_path.is_file():
         logging.basicConfig(filename=log, **log_settings)
