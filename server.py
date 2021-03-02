@@ -140,10 +140,10 @@ async def send_file(filepath: Path, writer: aio.StreamWriter, logger: logging.Lo
         # logger.info(f'checksum of: {checksum}')
         await defs.Message.write(writer, checksum)
 
-        f.seek(0)
         filesize = filepath.stat().st_size
         await defs.Message.write(writer, str(filesize))
 
+        f.seek(0)
         writer.writelines(f) # don't need to encode
         await writer.drain()
 

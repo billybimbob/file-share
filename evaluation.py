@@ -13,12 +13,19 @@ import shlex
 
 
 PYTHON_CMD = "python" if sys.platform.startswith('win') else "python3"
+# sys.executable not working?
+
+
+# region directory locations
 
 CONFIGS = 'configs'
 SERVERS = 'servers'
 CLIENTS = 'clients'
+
 LOGS = 'logs'
 TIMES = 'times'
+
+# endregion
 
 
 async def start_server(file_size: str, server_id: int) -> proc.Process:
@@ -40,7 +47,7 @@ async def start_server(file_size: str, server_id: int) -> proc.Process:
     return server
 
 
-async def create_clients(num_clients: int) -> List[proc.Process]:
+async def create_clients(num_clients: int, verbosity: int) -> List[proc.Process]:
     """ Creates a number of client processes """
     clients: List[proc.Process] = []
 
@@ -51,7 +58,7 @@ async def create_clients(num_clients: int) -> List[proc.Process]:
             shutil.rmtree(client_dir)
 
         client = await aio.create_subprocess_exec(
-            *shlex.split(f"{PYTHON_CMD} client.py -c {CONFIGS}/eval-client.ini -d {client_dir} -u client-{i} -v 30"),
+            *shlex.split(f"{PYTHON_CMD} client.py -c {CONFIGS}/eval-client.ini -d {client_dir} -u client-{i} -v {verbosity}"),
             stdin=proc.PIPE
         )
 
@@ -81,12 +88,12 @@ async def stop_procs(server: proc.Process, clients: List[proc.Process]):
 
 
 
-async def run_cycle(num_clients: int, file_size: str, repeat: int, time_file: str):
+async def run_cycle(num_clients: int, file_size: str, repeat: int, time_file: str, verbosity: int):
     """ Manages the creation, running, and killing of server and client procs """
     for i in range(repeat):
         try:
             server = await start_server(file_size, i)
-            clients = await create_clients(num_clients)
+            clients = await create_clients(num_clients, verbosity)
 
             await run_downloads(clients)
             await stop_procs(server, clients)
@@ -127,8 +134,10 @@ def read_download_times() -> List[float]:
 
 def record_times(time_file: str, run_label: str, times: List[float]):
     """ Writes or modifies and existing json file with new time data """
-    mode = 'r+' if Path(time_file).exists() else 'w+'
-    with open(f'{TIMES}/{time_file}', mode) as f:
+    filepath = Path(f'{TIMES}/{time_file}')
+    mode = 'r+' if filepath.exists() else 'w+'
+
+    with open(filepath, mode) as f:
         try:
             obj = json.load(f)
         except JSONDecodeError:
@@ -172,11 +181,13 @@ if __name__ == "__main__":
     args.add_argument("-f", "--file_size", choices=['128', '512', '2k', '8k', '32k'], default='128', help="the size of each file downloaded")
     args.add_argument("-j", "--json", default="times.json", help="the json file where the times will be recorded")
     args.add_argument("-r", "--repeat", type=int, default=2, help="the amount of repeated runs")
+    args.add_argument("-v", "--verbosity", type=int, default=10, choices=[0, 10, 20, 30, 40, 50], help="the logging verboseness, level corresponds to default levels")
     args = args.parse_args()
 
     aio.run(run_cycle(
         args.num_clients,
         args.file_size,
         args.repeat,
-        args.json
+        args.json,
+        args.verbosity
     ))

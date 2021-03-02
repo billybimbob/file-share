@@ -257,8 +257,7 @@ def process_args(user: str, address: str, num_sockets: int, directory: str) \
 
 async def open_connection(
     user: str, address: str, port: int, directory: str, workers: int,
-    retries: int, timeout: int, *args, **kwargs
-):
+    retries: int, timeout: int, *args, **kwargs):
     """ Attempts to connect to a server with the given args """
     try:
         user, host, num_sockets, path = process_args(user, address, workers, directory)
