@@ -283,7 +283,6 @@ async def open_connection(
 if __name__ == "__main__":
     logging.basicConfig(format="%(levelname)s: %(message)s")
     logging.getLogger('asyncio').setLevel(logging.WARNING)
-    logging.getLogger().setLevel(logging.DEBUG)
 
     args = ArgumentParser("creates a client and connect a server")
     args.add_argument("-a", "--address", default=None, help="ip address of the server")
@@ -293,9 +292,12 @@ if __name__ == "__main__":
     args.add_argument("-r", "--retries", type=int, default=3, help="amount of download retries on failure")
     args.add_argument("-t", "--timeout", type=int, default=60, help="time in seconds of no activity til the client disconnects")
     args.add_argument("-u", "--user", help="username of the client connecting")
+    args.add_argument("-v", "--verbosity", type=int, default=10, choices=[0, 10, 20, 30, 40, 50], help="the logging verboseness, level corresponds to default levels")
     args.add_argument("-w", "--workers", type=int, default=2, help="max number of sockets that can be connected be connected to the server")
 
     args = args.parse_args()
-    args = defs.merge_config_args(args)
 
+    logging.getLogger().setLevel(logging.getLevelName(args.verbosity))
+
+    args = defs.merge_config_args(args)
     aio.run( open_connection(**args) )

@@ -1,0 +1,6 @@
+{
+    "2 clients, 128 byte files": 6.581391999999999,
+    "4 clients, 128 byte files": 8.791892374999998,
+    "8 clients, 128 byte files": 8.6311396875,
+    "16 clients, 128 byte files": 14.280967156250004
+}
