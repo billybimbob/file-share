@@ -28,12 +28,11 @@ TIMES = 'times'
 # endregion
 
 
-async def start_server(file_size: str, server_id: int) -> proc.Process:
+async def start_server(file_size: str, log: str) -> proc.Process:
     """
     Launches the server on a separate process with the specified log and directory
     """
     server_dir = f'{SERVERS}/{file_size}'
-    log = f'{LOGS}/{server_id}.log'
 
     # clear log content
     if (Path(f'./{log}').exists()):
@@ -47,18 +46,35 @@ async def start_server(file_size: str, server_id: int) -> proc.Process:
     return server
 
 
-async def create_clients(num_clients: int, verbosity: int) -> List[proc.Process]:
+async def stop_server(server: proc.Process):
+    """ Sends input to all the server that should make it cleanly exit """
+    await server.communicate('\n'.encode())
+    await server.wait()
+
+
+
+async def create_clients(num_clients: int, label: str, verbosity: int) -> List[proc.Process]:
     """ Creates a number of client processes """
     clients: List[proc.Process] = []
 
     for i in range(num_clients):
         client_dir = f'{CLIENTS}/{i}'
+        log = f'{LOGS}/clients/client{i}-{label}.log'
+
+        if ((logpath := Path(log)).exists()):
+            # clear log content
+            open(log, 'w').close()
+        else:
+            logpath.parent.mkdir(exist_ok=True, parents=True)
 
         if Path(client_dir).exists():
             shutil.rmtree(client_dir)
 
         client = await aio.create_subprocess_exec(
-            *shlex.split(f"{PYTHON_CMD} client.py -c {CONFIGS}/eval-client.ini -d {client_dir} -u client-{i} -v {verbosity}"),
+            *shlex.split(
+                f"{PYTHON_CMD} client.py -c {CONFIGS}/eval-client.ini "
+                f"-d {client_dir} -u client-{i} -l {log} -v {verbosity}"
+            ),
             stdin=proc.PIPE
         )
 
@@ -76,32 +92,31 @@ async def run_downloads(clients: List[proc.Process]):
     ])
 
 
-async def stop_procs(server: proc.Process, clients: List[proc.Process]):
-    """ Sends input to all the procs that should make them cleanly exit """
+async def stop_clients(clients: List[proc.Process]):
+    """ Sends input to all the clients that should make them cleanly exit """
     await aio.gather(*[
         c.communicate('\n'.encode()) for c in clients
     ])
     await aio.gather(*[c.wait() for c in clients])
-    
-    await server.communicate('\n'.encode())
-    await server.wait()
 
 
 
 async def run_cycle(num_clients: int, file_size: str, repeat: int, time_file: str, verbosity: int):
     """ Manages the creation, running, and killing of server and client procs """
-    for i in range(repeat):
-        try:
-            server = await start_server(file_size, i)
-            clients = await create_clients(num_clients, verbosity)
 
-            await run_downloads(clients)
-            await stop_procs(server, clients)
+    run_label = f'{num_clients}c{file_size}f'
+    server_log = f'{LOGS}/server-{run_label}.log'
+    server = await start_server(file_size, server_log)
 
-        except Exception as e:
-            print(f'got error {e}')
 
-    times = read_download_times()
+    for _ in range(repeat):
+        clients = await create_clients(num_clients, run_label, verbosity)
+        await run_downloads(clients)
+        await stop_clients(clients)
+    
+    await stop_server(server)
+
+    times = read_download_times(server_log)
     record_times(
         time_file,
         f'{num_clients} clients, {file_size} byte files',
@@ -112,21 +127,16 @@ async def run_cycle(num_clients: int, file_size: str, repeat: int, time_file: st
 
 
 
-def read_download_times() -> List[float]:
+def read_download_times(log: str) -> List[float]:
     """ Parse log files to extract client download times """
     times: List[float] = []
+    with open(log) as f:
+        for line in f:
+            if not line.rstrip().endswith('secs'):
+                continue
 
-    for log in Path(LOGS).iterdir():
-        if not log.is_file():
-            continue
-
-        with open(log) as f:
-            for line in f:
-                if not line.rstrip().endswith('secs'):
-                    continue
-
-                toks = line.split()
-                times.append(float(toks[-2]))
+            toks = line.split()
+            times.append(float(toks[-2]))
 
     return times
 
@@ -134,7 +144,7 @@ def read_download_times() -> List[float]:
 
 def record_times(time_file: str, run_label: str, times: List[float]):
     """ Writes or modifies and existing json file with new time data """
-    filepath = Path(f'{TIMES}/{time_file}')
+    filepath = Path(f'{TIMES}/{time_file}').with_suffix(".json")
     mode = 'r+' if filepath.exists() else 'w+'
 
     with open(filepath, mode) as f:

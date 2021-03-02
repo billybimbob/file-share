@@ -95,8 +95,7 @@ async def list_dir(direct: Path, writer: aio.StreamWriter, log: logging.Logger):
 
 
 async def send_file_loop(
-    path: Path, pair: defs.StreamPair, logger: logging.Logger
-):
+    path: Path, pair: defs.StreamPair, logger: logging.Logger):
     """
     Runs multiple attempts to send a file based on the receiver response
     """

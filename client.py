@@ -233,6 +233,24 @@ async def receive_dirs(reader: aio.StreamReader) -> str:
 
 
 
+def init_log(log: str, verbosity: int):
+    """ Specifies logging format and location """
+    log_path = Path(f'./{log}')
+    log_path.parent.mkdir(exist_ok=True, parents=True)
+
+    log_settings = {
+        'format': "%(levelname)s: %(message)s",
+        'level': logging.getLevelName(verbosity)
+    }
+
+    if not log_path.exists() or log_path.is_file():
+        logging.basicConfig(filename=log, **log_settings)
+    else: # just use stdout
+        logging.basicConfig(**log_settings)
+
+
+
+
 def process_args(user: str, address: str, num_sockets: int, directory: str) \
     -> Tuple[str, str, int, Path]:
     """ Normalize and parse arguments """
@@ -257,10 +275,11 @@ def process_args(user: str, address: str, num_sockets: int, directory: str) \
 
 async def open_connection(
     user: str, address: str, port: int, directory: str, workers: int,
-    retries: int, timeout: int, *args, **kwargs):
+    retries: int, timeout: int, log: str, verbosity: int, *args, **kwargs):
     """ Attempts to connect to a server with the given args """
     try:
         user, host, num_sockets, path = process_args(user, address, workers, directory)
+        init_log(log, verbosity)
         sockets: List[defs.StreamPair] = []
 
         for _ in range(num_sockets):
@@ -280,13 +299,13 @@ async def open_connection(
 
 
 if __name__ == "__main__":
-    logging.basicConfig(format="%(levelname)s: %(message)s")
     logging.getLogger('asyncio').setLevel(logging.WARNING)
 
-    args = ArgumentParser("creates a client and connect a server")
+    args = ArgumentParser("creates a client and connect to a server")
     args.add_argument("-a", "--address", default=None, help="ip address of the server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--directory", default='', help="the client download folder")
+    args.add_argument("-l", "--log", default='server.log', help="the file to write log info to")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port connect to the server")
     args.add_argument("-r", "--retries", type=int, default=3, help="amount of download retries on failure")
     args.add_argument("-t", "--timeout", type=int, default=60, help="time in seconds of no activity til the client disconnects")
@@ -295,8 +314,6 @@ if __name__ == "__main__":
     args.add_argument("-w", "--workers", type=int, default=2, help="max number of sockets that can be connected be connected to the server")
 
     args = args.parse_args()
-
-    logging.getLogger().setLevel(logging.getLevelName(args.verbosity))
-
     args = defs.merge_config_args(args)
+
     aio.run( open_connection(**args) )
