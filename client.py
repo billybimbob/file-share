@@ -194,22 +194,23 @@ async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, re
 async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, int]:
     """ Used by the client side to download and verify correctness of download """
     checksum_passed = False
-    total_bytes = 0
+    amt_read = 0
 
     # expect the checksum to be sent first
-    checksum = await defs.Message.read_short(reader, False)
+    checksum = await defs.Message.read(reader, False)
     checksum = cast(bytes, checksum)
 
     with open(filepath, 'w+b') as f:
-        while True:
-            # no messages since each file chunk is part of same "message"
-            chunk = await reader.read(defs.MAX_PAYLOAD)
-            f.write(chunk)
-            total_bytes += len(chunk)
-            if len(chunk) < defs.MAX_PAYLOAD:
-                break
+        filesize = await defs.Message.read(reader)
+        filesize = int(filesize) # should always be str
 
-        logging.info(f'read {(total_bytes / 1000):.2f} KB')
+        while amt_read < filesize:
+            # no messages since each file chunk is part of same "message"
+            chunk = await reader.read(defs.CHUNK_SIZE)
+            f.write(chunk)
+            amt_read += len(chunk)
+
+        logging.info(f'read {(amt_read / 1000):.2f} KB')
         f.seek(0)
 
         local_checksum = hashlib.md5()
@@ -224,13 +225,13 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
         else:
             logging.error("checksum failed")
 
-    return (checksum_passed, total_bytes)
+    return (checksum_passed, amt_read)
 
 
 
 async def receive_dirs(reader: aio.StreamReader) -> str:
     """ Attempt to read multiple lines of file names from the reader """
-    dirs = await defs.Message.read_short(reader)
+    dirs = await defs.Message.read(reader)
     return cast(str, dirs)
 
 

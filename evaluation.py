@@ -9,6 +9,7 @@ import asyncio as aio
 import asyncio.subprocess as proc
 import shlex
 
+
 PYTHON_CMD = "python" if sys.platform.startswith('win') else "python3"
 
 CONFIGS = 'configs'

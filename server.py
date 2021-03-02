@@ -48,7 +48,7 @@ async def server_connection(path: Path, pair: defs.StreamPair):
 
     pair = defs.StreamPair(reader, writer)
     try:
-        while request := await defs.Message.read_short(reader):
+        while request := await defs.Message.read(reader):
 
             if request == defs.GET_FILES:
                 await list_dir(path, writer, logger)
@@ -100,7 +100,7 @@ async def send_file_loop(
     logger.info("waiting for selected file")
     reader, writer = pair
 
-    filename = await defs.Message.read_short(reader)
+    filename = await defs.Message.read(reader)
     filename = cast(str, filename)
     filepath = path.joinpath(filename)
 
@@ -110,13 +110,13 @@ async def send_file_loop(
     while should_send:
         await send_file(filepath, writer, logger)
 
-        amt_read = await defs.Message.read_short(reader)
+        amt_read = await defs.Message.read(reader)
         tot_bytes += int(amt_read)
 
-        success = await defs.Message.read_short(reader)
+        success = await defs.Message.read(reader)
         should_send = success != defs.SUCCESS
 
-    elapsed = await defs.Message.read_short(reader)
+    elapsed = await defs.Message.read(reader)
     elapsed = float(elapsed)
     logger.debug(
         f'transfer of {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs'
@@ -138,6 +138,9 @@ async def send_file(filepath: Path, writer: aio.StreamWriter, logger: logging.Lo
         await defs.Message.write(writer, checksum)
 
         f.seek(0)
+        filesize = filepath.stat().st_size
+        await defs.Message.write(writer, str(filesize))
+
         writer.writelines(f) # don't need to encode
         await writer.drain()
 

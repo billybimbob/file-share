@@ -9,7 +9,7 @@ import sys
 import struct
 import asyncio
 
-MAX_PAYLOAD = 1024
+CHUNK_SIZE = 1024
 
 #region request constants
 
@@ -28,8 +28,7 @@ class Message(NamedTuple):
     message: Union[str, bytes]
     is_exception: bool = False
 
-    full = struct.Struct(f"!{MAX_PAYLOAD-1}s?") # one byte for the bool
-    short = struct.Struct("!255p?")
+    header = struct.Struct("?I")
 
 
     def to_bytes(self) -> bytes:
@@ -39,19 +38,16 @@ class Message(NamedTuple):
         else:
             encoded = self.message.encode()
 
-        if len(encoded) < Message.short.size:
-            messenger = Message.short
-        else:
-            messenger = Message.full
+        size = len(encoded)
+        header = Message.header.pack(self.is_exception, size)
 
-        packed = messenger.pack(encoded, self.is_exception)
-        return packed
+        return header + encoded
 
 
     def unwrap(self, decode: bool=True) -> Union[str, bytes]:
         """ Get the message, or raise it as an exception """
         if isinstance(self.message, bytes) and decode:
-            decoded = self.message.decode().rstrip('\x00')
+            decoded = self.message.decode()
         else:
             decoded = self.message
 
@@ -70,21 +66,14 @@ class Message(NamedTuple):
 
 
     @staticmethod
-    async def read_short(reader: asyncio.StreamReader, decode: bool=True) -> Union[str, bytes]:
+    async def read(reader: asyncio.StreamReader, decode: bool=True) -> Union[str, bytes]:
         """ Get a short message from the stream """
-        data = await reader.readexactly(Message.short.size)
-        unpack = Message.short.unpack(data)
+        header = await reader.readexactly(Message.header.size)
 
-        return Message(*unpack).unwrap(decode)
+        exception, size = Message.header.unpack(header)
+        payload = await reader.readexactly(size)
 
-
-    @staticmethod
-    async def read_full(reader: asyncio.StreamReader, decode: bool=True) -> Union[str, bytes]:
-        """ Get a long message from the stream """
-        data = await reader.readexactly(Message.full.size)
-        unpack = Message.full.unpack(data)
-
-        return Message(*unpack).unwrap(decode)
+        return Message(payload, exception).unwrap(decode)
 
 #endregion
 
