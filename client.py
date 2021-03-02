@@ -24,9 +24,9 @@ Select an Option: """
 
 
 async def client_session(
-    path: Path, sockets: List[StreamPair], retries: int, timeout: int
-):
+    path: Path, sockets: List[StreamPair], retries: int, timeout: int):
     """ Procedure on how the client interacts with the server """
+
     logging.info('connected client')
     pair = sockets[0]
     pool: aio.Queue[StreamPair] = aio.Queue(len(sockets)-1)
@@ -310,7 +310,7 @@ if __name__ == "__main__":
     args.add_argument("-a", "--address", default=None, help="ip address of the server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--directory", default='', help="the client download folder")
-    args.add_argument("-l", "--log", default='server.log', help="the file to write log info to")
+    args.add_argument("-l", "--log", default='client.log', help="the file to write log info to")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port connect to the server")
     args.add_argument("-r", "--retries", type=int, default=3, help="amount of download retries on failure")
     args.add_argument("-t", "--timeout", type=int, default=60, help="time in seconds of no activity til the client disconnects")
