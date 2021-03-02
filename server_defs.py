@@ -53,10 +53,10 @@ class Message(NamedTuple):
         else:
             decoded = self.message
 
-        if not self.is_exception:
-            return decoded
-        else:
+        if self.is_exception:
             raise RuntimeError(decoded)
+        else:
+            return decoded
 
 
     @staticmethod
@@ -133,3 +133,8 @@ def merge_config_args(args: Namespace) -> Dict[str, Any]:
         # config overrides command args
         merged_args = { **vars(args), **read_config(args.config) }
         return merged_args
+
+
+def version_check():
+    if sys.version_info < (3,8):
+        raise RuntimeError("Python version needs to be at least 3.8")

@@ -1,4 +1,3 @@
-from json.decoder import JSONDecodeError
 from typing import Dict, List
 from argparse import ArgumentParser
 from pathlib import Path
@@ -150,7 +149,7 @@ def record_times(time_file: str, run_label: str, times: List[float]):
     with open(filepath, mode) as f:
         try:
             obj = json.load(f)
-        except JSONDecodeError:
+        except json.JSONDecodeError:
             obj = {}
 
         obj[run_label] = times

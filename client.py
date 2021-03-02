@@ -1,5 +1,6 @@
 from typing import Tuple, List, cast
 from argparse import ArgumentParser
+
 from pathlib import Path
 from time import time
 
@@ -8,7 +9,11 @@ import asyncio as aio
 import hashlib
 import logging
 
-import serverdefs as defs
+from server_defs import (
+    Message, StreamPair,
+    GET_FILES, DOWNLOAD, SUCCESS, RETRY, CHUNK_SIZE,
+    ainput, merge_config_args, version_check
+)
 
 
 CLIENT_PROMPT = """\
@@ -16,21 +21,20 @@ CLIENT_PROMPT = """\
 2. Download file
 3. Exit (any value besides 1 or 2 also works)
 Select an Option: """
-    
 
 
 async def client_session(
-    path: Path, sockets: List[defs.StreamPair], retries: int, timeout: int
+    path: Path, sockets: List[StreamPair], retries: int, timeout: int
 ):
     """ Procedure on how the client interacts with the server """
     logging.info('connected client')
     pair = sockets[0]
-    pool: aio.Queue[defs.StreamPair] = aio.Queue(len(sockets)-1)
+    pool: aio.Queue[StreamPair] = aio.Queue(len(sockets)-1)
     for s in sockets[1:]:
         pool.put_nowait(s)
 
     try:
-        while option := await aio.wait_for(defs.ainput(CLIENT_PROMPT), timeout):
+        while option := await aio.wait_for(ainput(CLIENT_PROMPT), timeout):
             option = option.rstrip()
             try:
                 if option == '1':
@@ -64,9 +68,9 @@ async def client_session(
 
 
 
-async def list_dir(pair: defs.StreamPair):
+async def list_dir(pair: StreamPair):
     """ Fetches and prints the files from the server """
-    await defs.Message.write(pair.writer, defs.GET_FILES)
+    await Message.write(pair.writer, GET_FILES)
 
     dirs = await receive_dirs(pair.reader)
     print("The files on the server are:")
@@ -74,9 +78,9 @@ async def list_dir(pair: defs.StreamPair):
 
 
 
-async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue, retries: int):
+async def run_download(path: Path, pair: StreamPair, pool: aio.Queue, retries: int):
     """ Runs and selects files to download from the server """
-    await defs.Message.write(pair.writer, defs.GET_FILES)
+    await Message.write(pair.writer, GET_FILES)
 
     dirs = await receive_dirs(pair.reader)
     dirs = dirs.splitlines()
@@ -133,37 +137,37 @@ async def run_download(path: Path, pair: defs.StreamPair, pool: aio.Queue, retri
 
 
 
-async def fetch_file(filename: str, path: Path, pair: defs.StreamPair, retries: int):
+async def fetch_file(filename: str, path: Path, pair: StreamPair, retries: int):
     """ Basic form of timing and downloading from the server """
     start_time = time()
     await receive_file_loop(filename, path, pair, retries)
 
     elapsed = time() - start_time
     logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
-    await defs.Message.write(pair.writer, str(elapsed))
+    await Message.write(pair.writer, str(elapsed))
 
 
 
 async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue, retries: int):
     """ Download a file from the server with on of the pooled sockets """
     start_time = time()
-    pair: defs.StreamPair = await sockets.get()
+    pair: StreamPair = await sockets.get()
     await receive_file_loop(filename, path, pair, retries)
 
     elapsed = time() - start_time
     logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
-    await defs.Message.write(pair.writer, str(elapsed))
+    await Message.write(pair.writer, str(elapsed))
 
     sockets.put_nowait(pair) # should never be > maxsize
 
 
 
-async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, retries: int):
+async def receive_file_loop(filename: str, path: Path, pair: StreamPair, retries: int):
     """ Runs multiple attempts to download a file from the server if needed """
     reader, writer = pair
-    await defs.Message.write(writer, defs.DOWNLOAD)
+    await Message.write(writer, DOWNLOAD)
 
-    await defs.Message.write(writer, filename)
+    await Message.write(writer, filename)
     filepath = path.joinpath(filename)
 
     stem = filepath.stem
@@ -178,13 +182,13 @@ async def receive_file_loop(filename: str, path: Path, pair: defs.StreamPair, re
     while not got_file and num_tries < retries:
         if num_tries > 0:
             logging.info(f"retrying {filename} download")
-            await defs.Message.write(writer, defs.RETRY)
+            await Message.write(writer, RETRY)
 
         got_file, byte_amt = await receive_file(filepath, reader)
-        await defs.Message.write(writer, str(byte_amt))
+        await Message.write(writer, str(byte_amt))
         num_tries += 1
     
-    await defs.Message.write(writer, defs.SUCCESS)
+    await Message.write(writer, SUCCESS)
 
 
 
@@ -194,16 +198,16 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
     amt_read = 0
 
     # expect the checksum to be sent first
-    checksum = await defs.Message.read(reader, False)
+    checksum = await Message.read(reader, False)
     checksum = cast(bytes, checksum)
 
     with open(filepath, 'w+b') as f:
-        filesize = await defs.Message.read(reader)
+        filesize = await Message.read(reader)
         filesize = int(filesize) # should always be str
 
         while amt_read < filesize:
             # no messages since each file chunk is part of same "message"
-            chunk = await reader.read(defs.CHUNK_SIZE)
+            chunk = await reader.read(CHUNK_SIZE)
             f.write(chunk)
             amt_read += len(chunk)
 
@@ -228,7 +232,7 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
 
 async def receive_dirs(reader: aio.StreamReader) -> str:
     """ Attempt to read multiple lines of file names from the reader """
-    dirs = await defs.Message.read(reader)
+    dirs = await Message.read(reader)
     return cast(str, dirs)
 
 
@@ -280,13 +284,13 @@ async def open_connection(
     try:
         user, host, num_sockets, path = process_args(user, address, workers, directory)
         init_log(log, verbosity)
-        sockets: List[defs.StreamPair] = []
+        sockets: List[StreamPair] = []
 
         for _ in range(num_sockets):
             pair = await aio.open_connection(host, port)
-            pair = defs.StreamPair(*pair)
+            pair = StreamPair(*pair)
             sockets.append(pair)
-            await defs.Message.write(pair.writer, user)
+            await Message.write(pair.writer, user)
 
         await client_session(path, sockets, retries, timeout)
 
@@ -299,6 +303,7 @@ async def open_connection(
 
 
 if __name__ == "__main__":
+    version_check()
     logging.getLogger('asyncio').setLevel(logging.WARNING)
 
     args = ArgumentParser("creates a client and connect to a server")
@@ -314,6 +319,6 @@ if __name__ == "__main__":
     args.add_argument("-w", "--workers", type=int, default=2, help="max number of sockets that can be connected be connected to the server")
 
     args = args.parse_args()
-    args = defs.merge_config_args(args)
+    args = merge_config_args(args)
 
     aio.run( open_connection(**args) )

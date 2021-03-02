@@ -7,7 +7,11 @@ import asyncio as aio
 import hashlib
 import logging
 
-import serverdefs as defs
+from server_defs import (
+    Message, StreamPair,
+    GET_FILES, DOWNLOAD, SUCCESS,
+    ainput, merge_config_args, version_check
+)
 
 
 SERVER_PROMPT = """\
@@ -18,7 +22,7 @@ Select an Option: """
 
 async def server_session(direct: Path):
     """ Cli for the server """
-    while option := await defs.ainput(SERVER_PROMPT):
+    while option := await ainput(SERVER_PROMPT):
         option = option.rstrip()
         
         if option == '1':
@@ -33,7 +37,7 @@ async def server_session(direct: Path):
 
 
 
-async def server_connection(path: Path, pair: defs.StreamPair):
+async def server_connection(path: Path, pair: StreamPair):
     """
     Callback called for the server wheneven a connection is established
     with a client
@@ -43,7 +47,7 @@ async def server_connection(path: Path, pair: defs.StreamPair):
     remote = socket.gethostbyaddr(addr)
 
     # username = remote[0]
-    username = await defs.Message.read(reader)
+    username = await Message.read(reader)
     username = cast(str, username)
 
     logger = logging.getLogger(username)
@@ -51,12 +55,12 @@ async def server_connection(path: Path, pair: defs.StreamPair):
     logger.debug(f"connected to {username}: {remote}")
 
     try:
-        while request := await defs.Message.read(reader):
+        while request := await Message.read(reader):
 
-            if request == defs.GET_FILES:
+            if request == GET_FILES:
                 await list_dir(path, writer, logger)
 
-            elif request == defs.DOWNLOAD:
+            elif request == DOWNLOAD:
                 await send_file_loop(path, pair, logger)
 
             else:
@@ -66,7 +70,7 @@ async def server_connection(path: Path, pair: defs.StreamPair):
         pass
     except IOError as e:
         logger.error(e)
-        await defs.Message.write(writer, str(e), error=True)
+        await Message.write(writer, str(e), error=True)
 
     finally:
         logger.debug('ending connection')
@@ -82,7 +86,7 @@ def path_connection(path: Path) \
     Creates a stream callback, and specifying the path for the server directory
     """
     return lambda reader, writer: \
-        server_connection(path, defs.StreamPair(reader, writer))
+        server_connection(path, StreamPair(reader, writer))
 
 
 
@@ -90,19 +94,19 @@ async def list_dir(direct: Path, writer: aio.StreamWriter, log: logging.Logger):
     """ Sends the server directory files to the client """
     log.info("listing dir")
     file_list = '\n'.join(d.name for d in direct.iterdir() if d.is_file())
-    await defs.Message.write(writer, file_list)
+    await Message.write(writer, file_list)
 
 
 
 async def send_file_loop(
-    path: Path, pair: defs.StreamPair, logger: logging.Logger):
+    path: Path, pair: StreamPair, logger: logging.Logger):
     """
     Runs multiple attempts to send a file based on the receiver response
     """
     logger.info("waiting for selected file")
     reader, writer = pair
 
-    filename = await defs.Message.read(reader)
+    filename = await Message.read(reader)
     filename = cast(str, filename)
     filepath = path.joinpath(filename)
 
@@ -112,13 +116,13 @@ async def send_file_loop(
     while should_send:
         await send_file(filepath, writer, logger)
 
-        amt_read = await defs.Message.read(reader)
+        amt_read = await Message.read(reader)
         tot_bytes += int(amt_read)
 
-        success = await defs.Message.read(reader)
-        should_send = success != defs.SUCCESS
+        success = await Message.read(reader)
+        should_send = success != SUCCESS
 
-    elapsed = await defs.Message.read(reader)
+    elapsed = await Message.read(reader)
     elapsed = float(elapsed)
     logger.debug(
         f'transfer of {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs'
@@ -137,10 +141,10 @@ async def send_file(filepath: Path, writer: aio.StreamWriter, logger: logging.Lo
         checksum = checksum.digest()
 
         # logger.info(f'checksum of: {checksum}')
-        await defs.Message.write(writer, checksum)
+        await Message.write(writer, checksum)
 
         filesize = filepath.stat().st_size
-        await defs.Message.write(writer, str(filesize))
+        await Message.write(writer, str(filesize))
 
         f.seek(0)
         writer.writelines(f) # don't need to encode
@@ -191,6 +195,7 @@ def default_logger(log: logging.Logger) -> logging.Logger:
 
 
 if __name__ == "__main__":
+    version_check()
     logging.getLogger('asyncio').setLevel(logging.WARNING)
 
     args = ArgumentParser("creates a server")
@@ -200,6 +205,6 @@ if __name__ == "__main__":
     args.add_argument("-p", "--port", type=int, default=8888, help="the port to run the server on")
 
     args = args.parse_args()
-    args = defs.merge_config_args(args)
+    args = merge_config_args(args)
 
     aio.run( start_server(**args) )
