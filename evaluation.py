@@ -3,31 +3,47 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 import sys
+import shutil
+
 import asyncio as aio
 import asyncio.subprocess as proc
 import shlex
 
 PYTHON_CMD = "python" if sys.platform.startswith('win') else "python3"
+
+CONFIGS = 'configs'
 SERVERS = 'servers'
+CLIENTS = 'clients'
+LOGS = 'logs'
 
 
-async def start_server(file_size: str, log: str) -> proc.Process:
+async def start_server(file_size: str, server_id: int) -> proc.Process:
     server_dir = f'{SERVERS}/{file_size}'
+    log = f'{LOGS}/{server_id}.log'
+
+    # clear log content
+    if (Path(f'./{log}').exists()):
+        open(log, 'w').close()
+
     server = await aio.create_subprocess_exec(
-        *shlex.split(f"{PYTHON_CMD} server.py -c configs/eval-server.ini -d {server_dir} -l {log}"),
+        *shlex.split(f"{PYTHON_CMD} server.py -c {CONFIGS}/eval-server.ini -d {server_dir} -l {log}"),
         stdin=proc.PIPE
     )
 
     return server
 
 
-
-
 async def create_clients(num_clients: int) -> List[proc.Process]:
     clients: List[proc.Process] = []
+
     for i in range(num_clients):
+        client_dir = f'{CLIENTS}/{i}'
+
+        if Path(client_dir).exists():
+            shutil.rmtree(client_dir)
+
         client = await aio.create_subprocess_exec(
-            *shlex.split(f"{PYTHON_CMD} client.py -c configs/eval-client.ini -d clients/{i}"),
+            *shlex.split(f"{PYTHON_CMD} client.py -c {CONFIGS}/eval-client.ini -d {client_dir}"),
             stdin=proc.PIPE
         )
         clients.append(client)
@@ -47,15 +63,25 @@ async def stop_procs(server: proc.Process, clients: List[proc.Process]):
     await aio.gather(*[
         c.communicate('\n'.encode()) for c in clients
     ])
+    await aio.gather(*[c.wait() for c in clients])
+    
     await server.communicate('\n'.encode())
+    await server.wait()
 
 
 async def run_cycle(num_clients: int, file_size: str, repeat: int):
     for i in range(repeat):
-        server = await start_server(file_size, f'logs/{i}.log')
-        clients = await create_clients(num_clients)
+        try:
+            server = await start_server(file_size, i)
+            clients = await create_clients(num_clients)
 
-        await stop_procs(server, clients)
+            await run_downloads(clients)
+            await stop_procs(server, clients)
+
+        except Exception as e:
+            print(f'got error {e}')
+
+    print('finished cycles')
 
 
 if __name__ == "__main__":
@@ -68,8 +94,11 @@ if __name__ == "__main__":
     args.add_argument("-r", "--repeat", type=int, default=2, help="the amount of repeated runs")
     args = args.parse_args()
 
-    aio.run(run_cycle(
-        args.num_clients,
-        args.file_size,
-        args.repeat
-    ))
+    try:
+        aio.run(run_cycle(
+            args.num_clients,
+            args.file_size,
+            args.repeat
+        ))
+    except:
+        print('error in run')

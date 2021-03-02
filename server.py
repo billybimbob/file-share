@@ -134,7 +134,7 @@ async def send_file(filepath: Path, writer: aio.StreamWriter, logger: logging.Lo
             checksum.update(line)
         checksum = checksum.digest()
 
-        logger.info(f'checksum of: {checksum}')
+        # logger.info(f'checksum of: {checksum}')
         await defs.Message.write(writer, checksum)
 
         f.seek(0)
