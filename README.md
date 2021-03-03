@@ -39,6 +39,8 @@ Running the script `server.py` and `client.py` are the actual server-client prog
 3. Run `client.py` any amount of times, making sure that args like `address` reference the location of the server, in order for the client to connect
 4. Wait for the client to initialize, start typing and interacting with either of the server or client clis.
 
+Servers can have any directory be as its file directory, but the server cannot show nested directories. Make sure that destination directory specified for the client is not the same as the server when specifying args.
+
 ### Evaluation
 
 The `evaluation.py` script automates much of the initialization listed above in order, with an assumption of the below directory structure. The main purpose is to time the performance of the client-server communication in different configuration contexts. The process to running the evaluations is simply running the script, but one recommendation is to file redirect the evaluations to avoid the shell being shown for each client:
@@ -49,7 +51,7 @@ python3 evaluation.py [ARGS...] > REDIRECT
 
 #### Directory Structure
 
-Multiple extra directories were introduced for organization sake. All of the folders below are specified to be run with `evaluation.py`:
+Multiple extra directories were introduced for organization sake. All of the folders below are specified to be run with `evaluation.py` and can also be demos for `server.py` and `client.py`:
 
 1. **configs**: some predefined configuration files for testing and evaluation
 2. **logs**: the output files while running either `server.py` or `client.py`
@@ -76,6 +78,8 @@ python3 plot_times.py [ARGS...]
 All of the parsed and generated output are stored in the `times` directory
 
 #### Install dependencies
+
+Note: this dependency is only required for optional script `plot_times.py`:
 
 ```bash
 pip3 install matplotlib
