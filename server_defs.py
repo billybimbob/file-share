@@ -1,4 +1,5 @@
-from typing import Dict, Any, Union, NamedTuple
+from __future__ import annotations
+from typing import Dict, Any, Union, NamedTuple, cast
 from collections import namedtuple
 
 from pathlib import Path
@@ -33,8 +34,8 @@ class Message(NamedTuple):
     HEADER = struct.Struct("?I")
 
 
-    def to_bytes(self) -> bytes:
-        """ Convert message to byte, struct form for streams """
+    def to_stream(self) -> bytes:
+        """ Convert message to byte struct form for streams """
         if isinstance(self.message, bytes):
             encoded = self.message
         else:
@@ -48,7 +49,7 @@ class Message(NamedTuple):
 
     def unwrap(self, decode: bool=True) -> Union[str, bytes]:
         """ Get the message, or raise it as an exception """
-        if isinstance(self.message, bytes) and decode:
+        if isinstance(self.message, bytes) and (decode or self.is_exception):
             decoded = self.message.decode()
         else:
             decoded = self.message
@@ -63,19 +64,32 @@ class Message(NamedTuple):
     async def write(writer: asyncio.StreamWriter, info: Union[str, bytes], error: bool=False):
         """ Send message as bytes or also send an error """
         message = Message(info, error)
-        writer.write(message.to_bytes())
+        writer.write(message.to_stream())
         await writer.drain()
 
 
     @staticmethod
-    async def read(reader: asyncio.StreamReader, decode: bool=True) -> Union[str, bytes]:
-        """ Get and unwrap a message from the stream """
+    async def read_message(reader: asyncio.StreamReader) -> Message:
+        """ Get a wrapped Message from the stream """
         header = await reader.readexactly(Message.HEADER.size)
-
         exception, size = Message.HEADER.unpack(header)
         payload = await reader.readexactly(size)
 
-        return Message(payload, exception).unwrap(decode)
+        return Message(payload, exception)
+
+
+    @staticmethod
+    async def read(reader: asyncio.StreamReader) -> str:
+        """ Get and unwrap a str from the stream """
+        message = await Message.read_message(reader)
+        return cast(str, message.unwrap())
+
+
+    @staticmethod
+    async def read_raw(reader: asyncio.StreamReader) -> bytes:
+        """ Get and unwrap bytes from the stream """
+        message = await Message.read_message(reader)
+        return cast(bytes, message.unwrap(False))
 
 #endregion
 

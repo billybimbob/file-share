@@ -9,7 +9,7 @@ if ($modfiles) {
     $sizes = "128", "512", "2k", "8k", "32k"
 
     foreach($size in $sizes) {
-        python .\evaluation.py -n 4 -r 2 -f $size > out.txt
+        python .\evaluation.py -n 4 -r 4 -f $size > out.txt
     }
 
 } else {

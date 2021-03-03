@@ -198,8 +198,7 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
     amt_read = 0
 
     # expect the checksum to be sent first
-    checksum = await Message.read(reader, False)
-    checksum = cast(bytes, checksum)
+    checksum = await Message.read_raw(reader)
 
     with open(filepath, 'w+b') as f:
         filesize = await Message.read(reader)
@@ -232,8 +231,7 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
 
 async def receive_dirs(reader: aio.StreamReader) -> str:
     """ Attempt to read multiple lines of file names from the reader """
-    dirs = await Message.read(reader)
-    return cast(str, dirs)
+    return await Message.read(reader)
 
 
 

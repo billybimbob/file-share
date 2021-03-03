@@ -48,7 +48,6 @@ async def server_connection(path: Path, pair: StreamPair):
 
     # username = remote[0]
     username = await Message.read(reader)
-    username = cast(str, username)
 
     logger = logging.getLogger(username)
     logger = default_logger(logger)
@@ -107,7 +106,6 @@ async def send_file_loop(
     reader, writer = pair
 
     filename = await Message.read(reader)
-    filename = cast(str, filename)
     filepath = path.joinpath(filename)
 
     tot_bytes = 0
