@@ -1,4 +1,4 @@
-from typing import Any, Callable, Coroutine, cast
+from typing import Any, Callable, Coroutine
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -69,7 +69,7 @@ async def server_connection(path: Path, pair: StreamPair):
         pass
     except IOError as e:
         logger.error(e)
-        await Message.write(writer, str(e), error=True)
+        await Message.write_error(writer, e)
 
     finally:
         logger.debug('ending connection')
@@ -142,7 +142,7 @@ async def send_file(filepath: Path, writer: aio.StreamWriter, logger: logging.Lo
         await Message.write(writer, checksum)
 
         filesize = filepath.stat().st_size
-        await Message.write(writer, str(filesize))
+        await Message.write(writer, filesize)
 
         f.seek(0)
         writer.writelines(f) # don't need to encode

@@ -1,4 +1,4 @@
-from typing import Tuple, List, cast
+from typing import Tuple, List
 from argparse import ArgumentParser
 
 from pathlib import Path
@@ -144,7 +144,7 @@ async def fetch_file(filename: str, path: Path, pair: StreamPair, retries: int):
 
     elapsed = time() - start_time
     logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
-    await Message.write(pair.writer, str(elapsed))
+    await Message.write(pair.writer, elapsed)
 
 
 
@@ -156,7 +156,7 @@ async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue, retri
 
     elapsed = time() - start_time
     logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
-    await Message.write(pair.writer, str(elapsed))
+    await Message.write(pair.writer, elapsed)
 
     sockets.put_nowait(pair) # should never be > maxsize
 
@@ -185,7 +185,7 @@ async def receive_file_loop(filename: str, path: Path, pair: StreamPair, retries
             await Message.write(writer, RETRY)
 
         got_file, byte_amt = await receive_file(filepath, reader)
-        await Message.write(writer, str(byte_amt))
+        await Message.write(writer, byte_amt)
         num_tries += 1
     
     await Message.write(writer, SUCCESS)
@@ -198,7 +198,7 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
     amt_read = 0
 
     # expect the checksum to be sent first
-    checksum = await Message.read_raw(reader)
+    checksum = await Message.read_bytes(reader)
 
     with open(filepath, 'w+b') as f:
         filesize = await Message.read(reader)
