@@ -1,4 +1,4 @@
-from typing import Tuple, List
+from typing import Optional, Tuple, List
 from argparse import ArgumentParser
 
 from pathlib import Path
@@ -198,11 +198,11 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
     amt_read = 0
 
     # expect the checksum to be sent first
-    checksum = await Message.read_bytes(reader)
+    checksum = await Message.read(reader, bytes)
 
     with open(filepath, 'w+b') as f:
-        filesize = await Message.read(reader)
-        filesize = int(filesize) # should always be str
+        filesize = await Message.read(reader, int)
+        # filesize = int(filesize) # should always be str
 
         while amt_read < filesize:
             # no messages since each file chunk is part of same "message"
@@ -231,7 +231,7 @@ async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, 
 
 async def receive_dirs(reader: aio.StreamReader) -> str:
     """ Attempt to read multiple lines of file names from the reader """
-    return await Message.read(reader)
+    return await Message.read(reader, str)
 
 
 
@@ -253,7 +253,7 @@ def init_log(log: str, verbosity: int):
 
 
 
-def process_args(user: str, address: str, num_sockets: int, directory: str) \
+def process_args(user: Optional[str], address: Optional[str], num_sockets: int, directory: str) \
     -> Tuple[str, str, int, Path]:
     """ Normalize and parse arguments """
     if address is None:
@@ -276,8 +276,9 @@ def process_args(user: str, address: str, num_sockets: int, directory: str) \
 
 
 async def open_connection(
-    user: str, address: str, port: int, directory: str, workers: int,
-    retries: int, timeout: int, log: str, verbosity: int, *args, **kwargs):
+    user: Optional[str], address: Optional[str], port: int, directory: str,
+    workers: int, retries: int, timeout: int,
+    log: str, verbosity: int, *args, **kwargs):
     """ Attempts to connect to a server with the given args """
     try:
         user, host, num_sockets, path = process_args(user, address, workers, directory)

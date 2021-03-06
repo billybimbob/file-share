@@ -47,15 +47,14 @@ async def server_connection(path: Path, pair: StreamPair):
     remote = socket.gethostbyaddr(addr)
 
     # username = remote[0]
-    username = await Message.read(reader)
+    username = await Message.read(reader, str)
 
     logger = logging.getLogger(username)
     logger = default_logger(logger)
     logger.debug(f"connected to {username}: {remote}")
 
     try:
-        while request := await Message.read(reader):
-
+        while request := await Message.read(reader, str):
             if request == GET_FILES:
                 await list_dir(path, writer, logger)
 
@@ -69,7 +68,7 @@ async def server_connection(path: Path, pair: StreamPair):
         pass
     except IOError as e:
         logger.error(e)
-        await Message.write_error(writer, e)
+        await Message.write(writer, e)
 
     finally:
         logger.debug('ending connection')
@@ -105,7 +104,7 @@ async def send_file_loop(
     logger.info("waiting for selected file")
     reader, writer = pair
 
-    filename = await Message.read(reader)
+    filename = await Message.read(reader, str)
     filepath = path.joinpath(filename)
 
     tot_bytes = 0
@@ -114,14 +113,14 @@ async def send_file_loop(
     while should_send:
         await send_file(filepath, writer, logger)
 
-        amt_read = await Message.read(reader)
-        tot_bytes += int(amt_read)
+        amt_read = await Message.read(reader, int)
+        tot_bytes += amt_read
 
-        success = await Message.read(reader)
+        success = await Message.read(reader, str)
         should_send = success != SUCCESS
 
-    elapsed = await Message.read(reader)
-    elapsed = float(elapsed)
+    elapsed = await Message.read(reader, float)
+    elapsed = elapsed
     logger.debug(
         f'transfer of {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs'
     )

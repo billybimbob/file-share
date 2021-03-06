@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, Any, Union, NamedTuple, cast
+from typing import Dict, Any, NamedTuple, TypeVar, Type, cast
 from collections import namedtuple
 
 from pathlib import Path
@@ -8,6 +8,7 @@ from argparse import Namespace
 
 import sys
 import struct
+import pickle
 import asyncio
 
 
@@ -28,68 +29,54 @@ RETRY = 'retry'
 
 class Message(NamedTuple):
     """ Information that is passed between socket streams """
-    message: bytes
-    is_exception: bool = False
+    payload: Any # pre-pickled data
 
-    HEADER = struct.Struct("!?I")
+    T = TypeVar('T')
+    HEADER = struct.Struct("!I")
 
 
-    def with_header(self) -> bytes:
+    @staticmethod
+    async def from_stream(stream: asyncio.StreamReader) -> Message:
+        """ Gets a message from the stream reader """
+        header = await stream.readexactly(Message.HEADER.size)
+        size, = Message.HEADER.unpack(header)
+
+        data = await stream.readexactly(size)
+        payload = pickle.loads(data)
+
+        return Message(payload)
+
+
+    def to_stream(self) -> bytes:
         """ Get the message with a metadata header for streams """
-        size = len(self.message)
-        header = Message.HEADER.pack(self.is_exception, size)
-        return header + self.message
+        data = pickle.dumps(self.payload)
+        size = len(data)
+        header = Message.HEADER.pack(size)
+        return header + data
 
 
-    def unwrap(self) -> bytes:
-        """ Get the bytes message or raise it as a decoded exception """
-        if self.is_exception:
+    def unwrap(self) -> Any:
+        """ Get the payload or raise it as a decoded exception """
+        if isinstance(self.payload, Exception):
             # potentially could have message of just random bytes
-            raise RuntimeError(self.message.decode())
+            raise self.payload
         else:
-            return self.message
+            return self.payload
 
 
     @staticmethod
-    async def write(writer: asyncio.StreamWriter, info: Any):
-        """
-        Send a regular message through the stream, any non-bytes value will be
-        converted to a string and encoded
-        """
-        if isinstance(info, bytes):
-            message = Message(info)
-        else: # str types should str to the same val
-            encoded = str(info).encode()
-            message = Message(encoded)
-
-        writer.write(message.with_header())
-        await writer.drain()
-
-    
-    @staticmethod
-    async def write_error(writer: asyncio.StreamWriter, error: Exception):
-        """ Send an error message encoded through the stream """
-        encoded = str(error).encode()
-        message = Message(encoded, True)
-        writer.write(message.with_header())
+    async def write(writer: asyncio.StreamWriter, payload: Any):
+        """ Send a regular message or an exception through the stream """
+        message = Message(payload)
+        writer.write(message.to_stream())
         await writer.drain()
 
 
     @staticmethod
-    async def read_bytes(reader: asyncio.StreamReader) -> bytes:
-        """ Get and unwrap bytes from the stream """
-        header = await reader.readexactly(Message.HEADER.size)
-        exception, size = Message.HEADER.unpack(header)
-        payload = await reader.readexactly(size)
-
-        return Message(payload, exception).unwrap()
-
-
-    @staticmethod
-    async def read(reader: asyncio.StreamReader) -> str:
-        """ Get and unwrap a str from the stream """
-        message = await Message.read_bytes(reader)
-        return message.decode()
+    async def read(reader: asyncio.StreamReader, as_type: Type[T]) -> T:
+        """ Get and unwrap bytes, as the expected type from the stream """
+        message = await Message.from_stream(reader)
+        return cast(as_type, message.unwrap())
 
 #endregion
 
