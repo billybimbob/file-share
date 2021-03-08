@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from typing import Any, Callable, Coroutine
 from argparse import ArgumentParser
 from pathlib import Path
@@ -7,7 +9,7 @@ import asyncio as aio
 import hashlib
 import logging
 
-from server_defs import (
+from connection import (
     Message, StreamPair,
     GET_FILES, DOWNLOAD, SUCCESS,
     ainput, merge_config_args, version_check
@@ -43,8 +45,8 @@ async def server_connection(path: Path, pair: StreamPair):
     with a client
     """
     reader, writer = pair 
-    addr, _, _, _ = writer.get_extra_info('peername')
-    remote = socket.gethostbyaddr(addr)
+    info = writer.get_extra_info('peername')
+    remote = socket.gethostbyaddr(info[0])
 
     # username = remote[0]
     username = await Message.read(reader, str)
@@ -120,7 +122,6 @@ async def send_file_loop(
         should_send = success != SUCCESS
 
     elapsed = await Message.read(reader, float)
-    elapsed = elapsed
     logger.debug(
         f'transfer of {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs'
     )

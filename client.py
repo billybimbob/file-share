@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from typing import Optional, Tuple, List
 from argparse import ArgumentParser
 
@@ -9,7 +11,7 @@ import asyncio as aio
 import hashlib
 import logging
 
-from server_defs import (
+from connection import (
     Message, StreamPair,
     GET_FILES, DOWNLOAD, SUCCESS, RETRY, CHUNK_SIZE,
     ainput, merge_config_args, version_check
@@ -84,7 +86,7 @@ async def run_download(path: Path, pair: StreamPair, pool: aio.Queue, retries: i
 
     dirs = await receive_dirs(pair.reader)
     dirs = dirs.splitlines()
-    selects = []
+    selects: List[str] = []
 
     while len(dirs) > 0: # file selection
         if len(dirs) == 1:

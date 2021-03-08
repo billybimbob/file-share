@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from typing import List
 from argparse import ArgumentParser
 from pathlib import Path

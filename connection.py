@@ -36,7 +36,7 @@ class Message(NamedTuple):
 
 
     @staticmethod
-    async def from_stream(stream: asyncio.StreamReader) -> Message:
+    async def get(stream: asyncio.StreamReader) -> Message:
         """ Gets a message from the stream reader """
         header = await stream.readexactly(Message.HEADER.size)
         size, = Message.HEADER.unpack(header)
@@ -47,7 +47,7 @@ class Message(NamedTuple):
         return Message(payload)
 
 
-    def to_stream(self) -> bytes:
+    def pack(self) -> bytes:
         """ Get the message with a metadata header for streams """
         data = pickle.dumps(self.payload)
         size = len(data)
@@ -68,14 +68,14 @@ class Message(NamedTuple):
     async def write(writer: asyncio.StreamWriter, payload: Any):
         """ Send a regular message or an exception through the stream """
         message = Message(payload)
-        writer.write(message.to_stream())
+        writer.write(message.pack())
         await writer.drain()
 
 
     @staticmethod
     async def read(reader: asyncio.StreamReader, as_type: Type[T]) -> T:
         """ Get and unwrap bytes, as the expected type from the stream """
-        message = await Message.from_stream(reader)
+        message = await Message.get(reader)
         return cast(as_type, message.unwrap())
 
 #endregion
