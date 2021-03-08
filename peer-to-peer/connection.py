@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from __future__ import annotations
 from typing import Dict, Any, NamedTuple, TypeVar, Type, cast
 from collections import namedtuple
