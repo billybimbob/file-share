@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from typing import Dict, Any, NamedTuple, TypeVar, Type, cast
-from collections import namedtuple
+# from collections import namedtuple
 
 from pathlib import Path
 from configparser import ConfigParser
@@ -104,11 +104,11 @@ async def ainput(prompt: str='') -> str:
     )
 
 
-def shallow_obj(map: Dict[str, Any]) -> object:
-    """
-    Convert a dictionary into a python object, where each key is an attribute
-    """
-    return namedtuple('obj', map.keys())(*map.values())
+# def shallow_obj(map: Dict[str, Any]) -> object:
+#     """
+#     Convert a dictionary into a python object, where each key is an attribute
+#     """
+#     return namedtuple('obj', map.keys())(*map.values())
 
 
 def read_config(filename: str) -> Dict[str, Any]:

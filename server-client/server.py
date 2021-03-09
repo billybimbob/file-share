@@ -163,7 +163,7 @@ def init_log(log: str):
 
 
 
-async def start_server(port: int, directory: str, log: str, *args, **kwargs):
+async def start_server(port: int, directory: str, log: str, *args: Any, **kwargs: Any):
     """ Switch to convert the command args to a given server or client """
     host = socket.gethostname() # should be loopback
 
@@ -175,11 +175,12 @@ async def start_server(port: int, directory: str, log: str, *args, **kwargs):
 
     server = await aio.start_server(path_connection(path), host=host, port=port)
     async with server:
-        addr: str = server.sockets[0].getsockname()
-        logger.info(f'created server on {addr}, listening for clients')
+        if server.sockets:
+            addr: str = server.sockets[0].getsockname()[0]
+            logger.info(f'created server on {addr}, listening for clients')
 
-        aio.create_task(server.serve_forever())
-        await aio.create_task(server_session(path))
+            aio.create_task(server.serve_forever())
+            await aio.create_task(server_session(path))
 
     await server.wait_closed()
     logger.info("server has stopped")
