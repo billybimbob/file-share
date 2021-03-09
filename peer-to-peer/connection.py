@@ -23,6 +23,7 @@ GET_FILES = 'get_files_list'
 DOWNLOAD = 'download'
 SUCCESS = 'success'
 RETRY = 'retry'
+QUERY = 'query'
 
 #endregion
 
@@ -118,7 +119,7 @@ def read_config(filename: str) -> Dict[str, Any]:
     conf = ConfigParser()
     conf.read(filename)
 
-    args = {}
+    args: Dict[str, Any] = {}
     for section in conf.sections():
         for arg in conf[section]:
             args[arg] = conf[section][arg]
