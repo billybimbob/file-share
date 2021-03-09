@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from argparse import ArgumentParser
-from typing import Dict, Set, NamedTuple, Tuple, Union
+from typing import NamedTuple, Union
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -12,7 +12,7 @@ import logging
 
 from connection import (
     StreamPair, Message,
-    QUERY, GET_FILES, merge_config_args,
+    QUERY, GET_FILES, ainput, merge_config_args,
     version_check
 )
 
@@ -20,7 +20,7 @@ from connection import (
 @dataclass
 class PeerInfo:
     """ Peer connection state """
-    files: Set[str] = field(default_factory=set)
+    files: set[str] = field(default_factory=set)
     is_querying: bool = False
     log: logging.Logger = field(default_factory=logging.getLogger)
 
@@ -39,8 +39,13 @@ class Indexer:
     """ Indexing server node that keeps track of file positions """
     port: int
     direct: Path
-    peers: Dict[StreamPair, PeerInfo]
+    peers: dict[StreamPair, PeerInfo]
     queries: aio.Queue[StreamPair]
+
+    PROMPT = "" \
+        "1. List active peers\n" \
+        "2. Kill Server (any value besides 1 also works)\n" \
+        "Sected an Option: "
     
     def __init__(self, port: int, directory: Union[str, Path, None]=None):
         self.port = min(1, port)
@@ -57,7 +62,7 @@ class Indexer:
         self.queries = aio.Queue()
 
 
-    def get_filelocs(self, filename: str) -> Tuple[FileInfo]:
+    def get_filelocs(self, filename: str) -> tuple[FileInfo]:
         """ Find the peer nodes associated with a file """
         locs = { # use set to find unique pairs
             pair
@@ -118,13 +123,28 @@ class Indexer:
         self.peers[pair].files.intersection_update(
             files.splitlines()
         )
-        self.peers[pair].is_querying = False
 
+        self.peers[pair].is_querying = False
         self.queries.task_done()
 
 
     async def session(self):
-        pass
+        """ Cli for idexer """
+        while option := await ainput(Indexer.PROMPT):
+            option = option.rstrip()
+
+            if option == '1':
+                peer_users = '\n'.join(
+                    info.log.name
+                    for pair, info in self.peers.items()
+                    if not pair.writer.is_closing()
+                )
+                print('The peers connected are: ')
+                print(f'{peer_users}\n')
+
+            else:
+                print('Exiting server')    
+                break
 
 
     async def connected(self, pair: StreamPair):
@@ -169,13 +189,13 @@ class Indexer:
         filename = await Message.read(pair.reader, str)
         self.peers[pair].log.debug(f'querying for file {filename}')
 
-        await aio.gather(*[ # update filename info
+        await aio.gather(*tuple( # update filename info
             # could maybe no wait
             self.queries.put(loc.pair)
             for loc in self.get_filelocs(filename)
             if not loc.is_querying \
                 and not loc.pair.writer.is_closing()
-        ])
+        ))
 
         await self.queries.join() # wait for no more queries
 

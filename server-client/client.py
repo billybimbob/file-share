@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-from typing import Optional, Tuple, List
+from __future__ import annotations
+from typing import Any, Optional
 from argparse import ArgumentParser
 
 from pathlib import Path
@@ -19,14 +20,14 @@ from connection import (
 
 
 CLIENT_PROMPT = """\
-1. List files on server
+1. list files on server
 2. Download file
 3. Exit (any value besides 1 or 2 also works)
 Select an Option: """
 
 
 async def client_session(
-    path: Path, sockets: List[StreamPair], retries: int, timeout: int):
+    path: Path, sockets: list[StreamPair], retries: int, timeout: int):
     """ Procedure on how the client interacts with the server """
 
     logging.info('connected client')
@@ -80,13 +81,13 @@ async def list_dir(pair: StreamPair):
 
 
 
-async def run_download(path: Path, pair: StreamPair, pool: aio.Queue, retries: int):
+async def run_download(path: Path, pair: StreamPair, pool: aio.Queue[StreamPair], retries: int):
     """ Runs and selects files to download from the server """
     await Message.write(pair.writer, GET_FILES)
 
     dirs = await receive_dirs(pair.reader)
     dirs = dirs.splitlines()
-    selects: List[str] = []
+    selects: list[str] = []
 
     while len(dirs) > 0: # file selection
         if len(dirs) == 1:
@@ -150,7 +151,7 @@ async def fetch_file(filename: str, path: Path, pair: StreamPair, retries: int):
 
 
 
-async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue, retries: int):
+async def fetch_file_pooled(filename: str, path: Path, sockets: aio.Queue[StreamPair], retries: int):
     """ Download a file from the server with on of the pooled sockets """
     start_time = time()
     pair: StreamPair = await sockets.get()
@@ -194,7 +195,7 @@ async def receive_file_loop(filename: str, path: Path, pair: StreamPair, retries
 
 
 
-async def receive_file(filepath: Path, reader: aio.StreamReader) -> Tuple[bool, int]:
+async def receive_file(filepath: Path, reader: aio.StreamReader) -> tuple[bool, int]:
     """ Used by the client side to download and verify correctness of download """
     checksum_passed = False
     amt_read = 0
@@ -256,7 +257,7 @@ def init_log(log: str, verbosity: int):
 
 
 def process_args(user: Optional[str], address: Optional[str], num_sockets: int, directory: str) \
-    -> Tuple[str, str, int, Path]:
+    -> tuple[str, str, int, Path]:
     """ Normalize and parse arguments """
     if address is None:
         # should be loopback
@@ -280,12 +281,12 @@ def process_args(user: Optional[str], address: Optional[str], num_sockets: int, 
 async def open_connection(
     user: Optional[str], address: Optional[str], port: int, directory: str,
     workers: int, retries: int, timeout: int,
-    log: str, verbosity: int, *args, **kwargs):
+    log: str, verbosity: int, *args: Any, **kwargs: Any):
     """ Attempts to connect to a server with the given args """
     try:
         user, host, num_sockets, path = process_args(user, address, workers, directory)
         init_log(log, verbosity)
-        sockets: List[StreamPair] = []
+        sockets: list[StreamPair] = []
 
         for _ in range(num_sockets):
             pair = await aio.open_connection(host, port)

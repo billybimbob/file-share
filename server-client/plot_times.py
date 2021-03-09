@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, NamedTuple, Optional
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -13,9 +13,9 @@ import matplotlib.pyplot as plt
 
 TIMES = 'times'
 
-def read_download_times(log: Path) -> List[float]:
+def read_download_times(log: Path) -> list[float]:
     """ Parse log files to extract client download times """
-    times: List[float] = []
+    times: list[float] = []
     with open(log) as f:
         for line in f:
             if not line.rstrip().endswith('secs'):
@@ -62,7 +62,7 @@ class Label(NamedTuple):
 
     
     @staticmethod
-    def sort(entry: Tuple[str, float]) -> Tuple[int, int]:
+    def sort(entry: tuple[str, float]) -> tuple[int, int]:
         """ Extracts the numerical sortable values from the json key """
         label = Label.from_key(entry[0])
         if label is None:
@@ -86,7 +86,7 @@ def as_time_json(filename: str) -> Path:
     return Path(TIMES).joinpath(filename).with_suffix(".json")
     
 
-def record_times(time_file: str, run_label: str, times: List[float]):
+def record_times(time_file: str, run_label: str, times: list[float]):
     """ Writes or modifies and existing json file with new time data """
     filepath = as_time_json(time_file)
     mode = 'r+' if filepath.exists() else 'w+'
@@ -95,7 +95,7 @@ def record_times(time_file: str, run_label: str, times: List[float]):
         try:
             obj = json.load(f)
         except json.JSONDecodeError:
-            obj = {}
+            obj: dict[str, Any] = {}
 
         obj[run_label] = times
 
@@ -115,9 +115,9 @@ def record_avgs(time_file: str, avg_file: Optional[str]=None) -> str:
         avg_file = time_file
 
     timepath = as_time_json(time_file)
-    avgs = {}
+    avgs: dict[str, Any] = {}
     with open(timepath, 'r') as r:
-        file_times: Dict[str, List[float]] = json.load(r)
+        file_times: dict[str, list[float]] = json.load(r)
         avgs = {
             label: sum(times) / len(times)
             for label, times in file_times.items()
@@ -137,7 +137,7 @@ def graph_avgs(name: str, avgfile: str, graphpath: Optional[str]):
     """
     avgpath = as_time_json(avgfile)
     with open(avgpath, 'r') as f:
-        avgs: Dict[str, float] = json.load(f)
+        avgs: dict[str, float] = json.load(f)
         avgs = {
             label: time
             for label, time in sorted(

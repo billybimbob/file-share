@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from typing import List
+from __future__ import annotations
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -50,9 +50,9 @@ async def stop_server(server: proc.Process):
 
 
 
-async def create_clients(num_clients: int, label: str, verbosity: int) -> List[proc.Process]:
+async def create_clients(num_clients: int, label: str, verbosity: int) -> list[proc.Process]:
     """ Creates a number of client processes """
-    clients: List[proc.Process] = []
+    clients: list[proc.Process] = []
 
     for i in range(num_clients):
         client_dir = f'{CLIENTS}/{i}'
@@ -80,7 +80,7 @@ async def create_clients(num_clients: int, label: str, verbosity: int) -> List[p
     return clients
 
 
-async def run_downloads(clients: List[proc.Process]):
+async def run_downloads(clients: list[proc.Process]):
     """ Passes input to the client processes to request downloads from the server """
     all_files_in = "1\n\n" * 9 # should be 10 files on each server
     client_input = f'2\n{all_files_in}\n'.encode()
@@ -89,7 +89,7 @@ async def run_downloads(clients: List[proc.Process]):
     ])
 
 
-async def stop_clients(clients: List[proc.Process]):
+async def stop_clients(clients: list[proc.Process]):
     """ Sends input to all the clients that should make them cleanly exit """
     await aio.gather(*[
         c.communicate('\n'.encode()) for c in clients

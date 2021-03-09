@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
 from typing import Any, Callable, Coroutine
 from argparse import ArgumentParser
 from pathlib import Path
@@ -17,7 +18,7 @@ from connection import (
 
 
 SERVER_PROMPT = """\
-1. List files on server
+1. list files on server
 2. Kill Server (any value besides 1 also works)
 Select an Option: """
 

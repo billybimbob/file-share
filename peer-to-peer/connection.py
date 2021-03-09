@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import Dict, Any, NamedTuple, TypeVar, Type, cast
+from typing import Any, NamedTuple, TypeVar, cast
 # from collections import namedtuple
 
 from pathlib import Path
@@ -76,7 +76,7 @@ class Message(NamedTuple):
 
 
     @staticmethod
-    async def read(reader: asyncio.StreamReader, as_type: Type[T]) -> T:
+    async def read(reader: asyncio.StreamReader, as_type: type[T]) -> T:
         """ Get and unwrap bytes, as the expected type from the stream """
         message = await Message.get(reader)
         return cast(as_type, message.unwrap())
@@ -111,7 +111,7 @@ async def ainput(prompt: str='') -> str:
 #     return namedtuple('obj', map.keys())(*map.values())
 
 
-def read_config(filename: str) -> Dict[str, Any]:
+def read_config(filename: str) -> dict[str, Any]:
     """ Parse an ini file into a dictionary, ignoring sections """
     if not Path(filename).exists():
         raise IOError("Config file does not exist")
@@ -119,7 +119,7 @@ def read_config(filename: str) -> Dict[str, Any]:
     conf = ConfigParser()
     conf.read(filename)
 
-    args: Dict[str, Any] = {}
+    args: dict[str, Any] = {}
     for section in conf.sections():
         for arg in conf[section]:
             args[arg] = conf[section][arg]
@@ -129,7 +129,7 @@ def read_config(filename: str) -> Dict[str, Any]:
     return args
 
 
-def merge_config_args(args: Namespace) -> Dict[str, Any]:
+def merge_config_args(args: Namespace) -> dict[str, Any]:
     """ If config file specified, merge in config arguments as a dictionary """
     if not args.config:
         return vars(args)
