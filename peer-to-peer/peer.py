@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
+from time import time
 from typing import Any, NamedTuple, Optional, Union
 from dataclasses import dataclass, field
 
@@ -13,7 +14,7 @@ import hashlib
 import logging
 
 from connection import (
-    Message, Request, StreamPair,
+    CHUNK_SIZE, Message, Request, StreamPair,
     ainput, merge_config_args, version_check
 )
 
@@ -44,8 +45,9 @@ class Peer:
     index_start: IndexInfo
 
     PROMPT = "" \
-        "1. List all available files in system" \
-        "2. Download a file" \
+        "1. List all available files in system\n" \
+        "2. Download a file\n" \
+        "3. Kill Server (any value besides 1 & 2 also work)\n" \
         "Select an Option: "
 
 
@@ -58,7 +60,10 @@ class Peer:
         directory: Union[str, Path, None]=None,
         *args: Any,
         **kwargs: Any):
-
+        """
+        Creates all the state information for a peer node, use to method
+        start_server to activate the peer node
+        """
         self.port = min(1, port)
         self.user = socket.gethostname() if user is None else user
 
@@ -106,16 +111,22 @@ class Peer:
 
                 await Message.write(in_pair.writer, self.user)
 
-                dir_updates = aio.create_task(self.check_dir_updates(indexer))
+                dir_updates = aio.create_task(self.check_dir(indexer))
                 aio.create_task(server.serve_forever())
 
-                await aio.create_task(self.session(indexer))
+                session = aio.create_task(self.session(indexer))
+                conn = aio.create_task(self.watch_connection(indexer))
+
+                _, pend = await aio.wait([session, conn], return_when=aio.FIRST_COMPLETED)
+
                 dir_updates.cancel()
+                for p in pend:
+                    p.cancel()
 
         await server.wait_closed()
 
 
-    async def check_dir_updates(self, indexer: IndexState):
+    async def check_dir(self, indexer: IndexState):
         """
         Polls on directory file name changes, and sends updates to indexer
         """
@@ -137,31 +148,180 @@ class Peer:
             pass
 
 
+    async def watch_connection(self, indexer: IndexState):
+        """ Coroutine that completes when the indexer connection is closed """
+        check = aio.Condition()
+        await check.wait_for(lambda: indexer.pair.writer.is_closing())
+
+
+    #region session methods
+
     async def session(self, indexer: IndexState):
         """ Cli for peer """
         while request := await ainput(Peer.PROMPT):
             async with indexer.access:
                 # TODO: make session options
                 if request == '1':
-                    pass
+                    files = await self.system_files(indexer)
+                    options = (f'{i+1}: {file}' for i, file in enumerate(files))
+
+                    print('The files on the system:')
+                    print('\n'.join(options))
 
                 elif request == '2':
-                    pass
+                    await self.system_download(indexer)
 
                 else:
                     print(f'Exiting {self.user} peer server')
                     break
+
+
+    async def system_files(self, indexer: IndexState) -> list[str]:
+        """ Fetches all the files in the system based on indexer """
+        await Message.write(indexer.pair.writer, Request.GET_FILES)
+        files: list[str] = await Message.read(indexer.pair.reader, list)
+
+        return files
+
+
+    async def system_download(self, indexer: IndexState):
+        reader, writer = indexer.pair
+        files = await self.system_files(indexer)
+        files = set(files) - self.files
+
+        picked = self.select_file(files)
+
+        # query for loc
+        await Message.write(writer, Request.QUERY)
+        await Message.write(writer, picked)
+
+        peers: set[tuple[str, int]] = await Message.read(reader, set)
+        if len(peers) == 0:
+            logging.error(f"location for {picked} could not be found")
+            return
         
+        # open connection to peer
+        target = peers.pop()
+        pair = await aio.open_connection(target[0], target[1])
+        pair = StreamPair(*pair)
+
+        await self.download(picked, pair)
+
+
+    def select_file(self, fileset: set[str]) -> str:
+        """ Take in user input to select a file from the given set """
+        # sort might be slow
+        files = sorted(fileset)
+        options = (f'{i+1}: {file}' for i, file in enumerate(fileset))
+
+        choice = None
+        while choice is None or choice not in fileset:
+            if choice: print('invalid file entered')
+
+            print('\n'.join(options))
+            choice = input("enter file to download")
+
+            if choice.isnumeric():
+                idx = int(choice)-1
+                if idx >= 0 and idx < len(files):
+                    choice = files[idx]
+        
+        return choice
+
+    
+    async def download(self, filename: str, peer: StreamPair):
+        """ Client-size connection with any of the othe peers """
+        _, writer = peer
+        info = writer.get_extra_info('peername')
+        remote = socket.gethostbyaddr(info[0])
+        # username = await Message.read(reader, str)
+        logging.debug(f"connected to {remote}")
+        
+        await Message.write(writer, Request.DOWNLOAD)
+        await self.receive_file_loop(filename, peer)
+
+
+    async def receive_file_loop(self, filename: str, peer: StreamPair):
+        """ Runs multiple attempts to download a file from the server if needed """
+        start_time = time()
+        reader, writer = peer
+
+        await Message.write(writer, filename)
+        filepath = self.direct.joinpath(filename)
+
+        stem = filepath.stem
+        exts = "".join(filepath.suffixes)
+        dup_mod = 1
+        while filepath.exists():
+            filepath = filepath.with_name(f'{stem}({dup_mod}){exts}')
+            dup_mod += 1
+
+        got_file = False
+        num_tries = 0
+        while not got_file and num_tries < 5: # TODO: make param
+            if num_tries > 0:
+                logging.info(f"retrying {filename} download")
+                await Message.write(writer, Request.RETRY)
+
+            got_file, byte_amt = await self.receive_file(filepath, reader)
+            await Message.write(writer, byte_amt)
+            num_tries += 1
+        
+        await Message.write(writer, Request.SUCCESS)
+
+        elapsed = time() - start_time
+        logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
+        await Message.write(writer, elapsed)
+
+
+
+    async def receive_file(self, filepath: Path, reader: aio.StreamReader) -> tuple[bool, int]:
+        """ Used by the client side to download and verify correctness of download """
+        checksum_passed = False
+        amt_read = 0
+
+        # expect the checksum to be sent first
+        checksum = await Message.read(reader, bytes)
+
+        with open(filepath, 'w+b') as f:
+            filesize = await Message.read(reader, int)
+            # filesize = int(filesize) # should always be str
+
+            while amt_read < filesize:
+                # no messages since each file chunk is part of same "message"
+                chunk = await reader.read(CHUNK_SIZE)
+                f.write(chunk)
+                amt_read += len(chunk)
+
+            logging.info(f'read {(amt_read / 1000):.2f} KB')
+            f.seek(0)
+
+            local_checksum = hashlib.md5()
+            for line in f:
+                local_checksum.update(line)
+
+            local_checksum = local_checksum.digest()
+            checksum_passed = local_checksum == checksum
+
+            if checksum_passed:
+                logging.info("checksum passed")
+            else:
+                logging.error("checksum failed")
+
+        return (checksum_passed, amt_read)
+
+    #endregion
+
 
     async def upload(self, peer: StreamPair):
-        """ Connection with any of the other peers """
+        """ Server-side connection with any of the other peers """
         reader, writer = peer
 
         info = writer.get_extra_info('peername')
         remote = socket.gethostbyaddr(info[0])
-        username = await Message.read(reader, str)
+        # username = await Message.read(reader, str)
 
-        logging.debug(f"connected to {username}: {remote}")
+        logging.debug(f"connected to {remote}")
 
         try:
             # just do one transaction, and close stream

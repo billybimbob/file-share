@@ -33,7 +33,8 @@ class Indexer:
 
     PROMPT = "" \
         "1. List active peers\n" \
-        "2. Kill Server (any value besides 1 also works)\n" \
+        "2. List all files in the system\n" \
+        "3. Kill Server (any value besides 1 & 2 also work)\n" \
         "Select an Option: "
     
 
@@ -47,9 +48,9 @@ class Indexer:
         self.updates = aio.Queue()
 
 
-    def get_files(self) -> str:
-        """ Gets all the unique files accross all peers """
-        return '\n'.join({
+    def get_files(self) -> list[str]:
+        """ Gets all the unique files accross all peers in ascending order """
+        return sorted({
             file
             for info in self.peers.values()
             for file in info.files
@@ -176,6 +177,7 @@ class Indexer:
 
     async def connect_loop(self, pair: StreamPair):
         """ Request loop handler for each peer connection """
+
         while request := await Message.read(pair.reader, Request):
             if request == Request.GET_FILES:
                 await self.send_files(pair)
@@ -184,7 +186,7 @@ class Indexer:
                 await self.receive_update(pair)
 
             elif request == Request.QUERY:
-                await self.query_files(pair)
+                await self.query_file(pair)
 
             else:
                 break
@@ -198,7 +200,15 @@ class Indexer:
         await Message.write(pair.writer, self.get_files())
 
 
-    async def query_files(self, pair: StreamPair):
+    async def receive_update(self, pair: StreamPair):
+        """ Notify update handler of a update task, and wait for completion """
+        signal = self.peers[pair].signal
+        signal.clear()
+        await self.updates.put(pair)
+        await signal.wait() # block stream access til finished
+
+
+    async def query_file(self, pair: StreamPair):
         """ Reply to stream with the peers that have specfied file """
         filename = await Message.read(pair.reader, str)
         self.peers[pair].log.debug(f'querying for file {filename}')
@@ -211,14 +221,6 @@ class Indexer:
         }
 
         await Message.write(pair.writer, assoc_peers)
-
-    
-    async def receive_update(self, pair: StreamPair):
-        """ Notify update handler of a update task, and wait for completion """
-        signal = self.peers[pair].signal
-        signal.clear()
-        await self.updates.put(pair)
-        await signal.wait() # block stream access til finished
 
     #endregion
 
