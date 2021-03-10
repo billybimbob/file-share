@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import Any, NamedTuple, TypeVar, cast
+from io import UnsupportedOperation
+from typing import Any, NamedTuple, Optional, TypeVar, cast
+from enum import Enum
 # from collections import namedtuple
 
 from pathlib import Path
@@ -19,23 +21,45 @@ CHUNK_SIZE = 1024
 
 #region request constants
 
-GET_FILES = 'get_files_list'
-DOWNLOAD = 'download'
-SUCCESS = 'success'
-RETRY = 'retry'
-QUERY = 'query'
+class Request(Enum):
+    GET_FILES = 'get_files_list'
+    DOWNLOAD = 'download'
+    SUCCESS = 'success'
+    RETRY = 'retry'
+    UPDATE = 'update_files'
+    QUERY = 'query'
+
+    @staticmethod
+    def parse(poss_req: str) -> Optional[Request]:
+        request = None
+        try:
+            poss_req = poss_req.strip().upper()
+            request = Request[poss_req]
+        except (UnsupportedOperation, KeyError):
+            pass
+
+        return request
+
 
 #endregion
 
 
 #region message passing
 
-class Message(NamedTuple):
+class Message:
     """ Information that is passed between socket streams """
     payload: Any # pre-pickled data
 
     T = TypeVar('T')
     HEADER = struct.Struct("!I")
+
+
+    def __init__(self, payload: Any):
+        """
+        Creates a message that can be packed; the payload should 
+        not be pickled yet
+        """
+        self.payload = payload
 
 
     @staticmethod
@@ -100,7 +124,7 @@ async def ainput(prompt: str='') -> str:
     )
 
     return await asyncio.get_event_loop().run_in_executor(
-        None, sys.stdin.readline
+        None, lambda: sys.stdin.readline().rstrip()
     )
 
 

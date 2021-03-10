@@ -294,6 +294,7 @@ async def open_connection(
             sockets.append(pair)
             await Message.write(pair.writer, user)
 
+        # closes socket in session
         await client_session(path, sockets, retries, timeout)
 
     except Exception as e:
