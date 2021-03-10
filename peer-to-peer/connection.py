@@ -109,7 +109,7 @@ class Message:
 
 
 class StreamPair(NamedTuple):
-    """ Stream pairing """
+    """ Stream read-write, pairing """
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
 

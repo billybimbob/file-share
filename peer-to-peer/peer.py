@@ -25,7 +25,7 @@ class IndexInfo(NamedTuple):
     port: int
 
 
-@dataclass
+@dataclass(frozen=True)
 class IndexState:
     """
     All variable and constant information about the indexer connection
@@ -41,7 +41,7 @@ class Peer:
     port: int
     user: str
     direct: Path
-    files: set[str]
+    dir_update: aio.Event
     index_start: IndexInfo
 
     PROMPT = "" \
@@ -54,10 +54,10 @@ class Peer:
     def __init__(
         self,
         port: int,
-        user: Optional[str]=None,
-        address: Optional[str]=None, 
-        in_port: Optional[int]=None,
-        directory: Union[str, Path, None]=None,
+        user: Optional[str] = None,
+        address: Optional[str] = None, 
+        in_port: Optional[int] = None,
+        directory: Union[str, Path, None] = None,
         *args: Any,
         **kwargs: Any):
         """
@@ -75,6 +75,7 @@ class Peer:
             self.direct = directory
 
         self.direct.mkdir(exist_ok=True, parents=True)
+        self.dir_update = aio.Event()
 
         if address is None:
             in_host = socket.gethostname()
@@ -87,13 +88,20 @@ class Peer:
         self.index_start = IndexInfo(in_host, in_port)
 
 
+    def get_files(self) -> frozenset[str]:
+        """ Gets all the files from the direct path attribute """
+        return frozenset(
+            file.name for file in self.direct.iterdir()
+        )
+
+
     async def start_server(self):
         """
         Connects the peer to the indexing node, and starts the peer server
         """
         def to_upload(reader: aio.StreamReader, writer: aio.StreamWriter):
             """ Indexeder closure as a stream callback """
-            return self.upload(StreamPair(reader, writer))
+            return self.peer_upload(StreamPair(reader, writer))
 
         host = socket.gethostname()
         server = await aio.start_server(to_upload, host, self.port)
@@ -111,7 +119,9 @@ class Peer:
 
                 await Message.write(in_pair.writer, self.user)
 
-                dir_updates = aio.create_task(self.check_dir(indexer))
+                checker = aio.create_task(self.check_dir())
+                sender = aio.create_task(self.send_dir(indexer))
+
                 aio.create_task(server.serve_forever())
 
                 session = aio.create_task(self.session(indexer))
@@ -119,30 +129,44 @@ class Peer:
 
                 _, pend = await aio.wait([session, conn], return_when=aio.FIRST_COMPLETED)
 
-                dir_updates.cancel()
-                for p in pend:
-                    p.cancel()
+                checker.cancel()
+                sender.cancel()
+                for p in pend: p.cancel()
 
         await server.wait_closed()
 
 
-    async def check_dir(self, indexer: IndexState):
+    async def check_dir(self):
         """
-        Polls on directory file name changes, and sends updates to indexer
+        Polls on directory file name changes, and raises event updates on change found
         """
         try:
-            _, writer = indexer.pair
+            last_check = None
             while True:
-                check = { file.name for file in self.direct.iterdir() }
-                if self.files != check:
-                    self.files = check
-                    filenames = list(self.files)
+                check = self.get_files()
+                if last_check != check:
+                    last_check = check
+                    self.dir_update.set()
 
-                    async with indexer.access:
-                        await Message.write(writer, Request.UPDATE)
-                        await Message.write(writer, filenames)
+                await aio.sleep(5) # TODO: make interval param
 
-                await aio.sleep(5)
+        except aio.CancelledError:
+            pass
+
+
+    async def send_dir(self, indexer: IndexState):
+        """
+        Sends updated directory to indexer, should be the only place where files attr 
+        is updated in order to sync with indexer
+        """
+        _, writer = indexer.pair
+        try:
+            while True:
+                await self.dir_update.wait()
+                async with indexer.access:
+                    await Message.write(writer, Request.UPDATE)
+                    await Message.write(writer, self.get_files())
+                    self.dir_update.clear()
 
         except aio.CancelledError:
             pass
@@ -150,30 +174,35 @@ class Peer:
 
     async def watch_connection(self, indexer: IndexState):
         """ Coroutine that completes when the indexer connection is closed """
-        check = aio.Condition()
-        await check.wait_for(lambda: indexer.pair.writer.is_closing())
+        try:
+            check = aio.Condition()
+            await check.wait_for(lambda: indexer.pair.reader.at_eof())
+
+        except aio.CancelledError:
+            # indexer won't be reading, so don't have to eof
+            indexer.pair.writer.close()
+            await indexer.pair.writer.wait_closed()
 
 
     #region session methods
 
     async def session(self, indexer: IndexState):
         """ Cli for peer """
-        while request := await ainput(Peer.PROMPT):
-            async with indexer.access:
-                # TODO: make session options
-                if request == '1':
-                    files = await self.system_files(indexer)
-                    options = (f'{i+1}: {file}' for i, file in enumerate(files))
+        try:
+            while request := await ainput(Peer.PROMPT):
+                async with indexer.access:
+                    if request == '1':
+                        await self.list_system(indexer)
 
-                    print('The files on the system:')
-                    print('\n'.join(options))
+                    elif request == '2':
+                        await self.run_download(indexer)
 
-                elif request == '2':
-                    await self.system_download(indexer)
+                    else:
+                        print(f'Exiting {self.user} peer server')
+                        break
 
-                else:
-                    print(f'Exiting {self.user} peer server')
-                    break
+        except aio.CancelledError:
+            pass
 
 
     async def system_files(self, indexer: IndexState) -> list[str]:
@@ -183,11 +212,19 @@ class Peer:
 
         return files
 
+    
+    async def list_system(self, indexer: IndexState):
+        """ Fetches then prints the system files """
+        files = await self.system_files(indexer)
+        print('The files on the system:')
+        print('\n'.join(files))
 
-    async def system_download(self, indexer: IndexState):
+
+    async def run_download(self, indexer: IndexState):
+        """ Queries the indexer, prompts the user, then fetches file from peer """
         reader, writer = indexer.pair
         files = await self.system_files(indexer)
-        files = set(files) - self.files
+        files = set(files) - self.get_files()
 
         picked = self.select_file(files)
 
@@ -205,8 +242,9 @@ class Peer:
         pair = await aio.open_connection(target[0], target[1])
         pair = StreamPair(*pair)
 
-        await self.download(picked, pair)
+        await self.peer_download(picked, pair)
         # will close in download
+        self.dir_update.set()
 
 
     def select_file(self, fileset: set[str]) -> str:
@@ -230,7 +268,7 @@ class Peer:
         return choice
 
     
-    async def download(self, filename: str, peer: StreamPair):
+    async def peer_download(self, filename: str, peer: StreamPair):
         """ Client-side connection with any of the other peers """
         _, writer = peer
 
@@ -248,6 +286,7 @@ class Peer:
             logging.error(e)
 
         finally:
+            writer.write_eof()
             writer.close()
             await writer.wait_closed()
 
@@ -284,7 +323,6 @@ class Peer:
 
         await Message.write(writer, elapsed)
         logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
-
 
 
     async def receive_file(self, filepath: Path, reader: aio.StreamReader) -> tuple[bool, int]:
@@ -325,7 +363,7 @@ class Peer:
     #endregion
 
 
-    async def upload(self, peer: StreamPair):
+    async def peer_upload(self, peer: StreamPair):
         """ Server-side connection with any of the other peers """
         reader, writer = peer
         try:
@@ -347,6 +385,7 @@ class Peer:
             await Message.write(writer, e)
 
         finally:
+            writer.write_eof()
             writer.close()
             await writer.wait_closed()
 

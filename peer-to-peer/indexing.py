@@ -17,7 +17,7 @@ from connection import (
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class PeerState:
     """ Peer connection state """
     files: set[str] = field(default_factory=set)
@@ -87,11 +87,11 @@ class Indexer:
                 addr = server.sockets[0].getsockname()[0]
                 logging.info(f'indexing server on {addr}')
 
-                queries = aio.create_task(self.update_loop())
+                updates = aio.create_task(self.update_loop())
                 aio.create_task(server.serve_forever())
 
                 await aio.create_task(self.session())  
-                queries.cancel()
+                updates.cancel()
 
         await server.wait_closed()
         logging.info("index server stopped")
@@ -115,9 +115,10 @@ class Indexer:
     async def update_files(self, pair: StreamPair):
         """ Query the given stream for updated file list """
         pair_state = self.peers[pair]
-        files: list[str] = await Message.read(pair.reader, list)
+        files: frozenset[str] = await Message.read(pair.reader, frozenset)
 
-        pair_state.files.intersection_update(files)
+        pair_state.files.clear()
+        pair_state.files.update(files)
 
         self.updates.task_done()
         pair_state.signal.set()
