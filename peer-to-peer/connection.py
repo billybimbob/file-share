@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from io import UnsupportedOperation
-from typing import Any, NamedTuple, Optional, TypeVar, cast
+from typing import Any, NamedTuple, Optional, TypeVar, Union, cast
 from enum import Enum
 # from collections import namedtuple
 
@@ -113,6 +113,21 @@ class StreamPair(NamedTuple):
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
 
+
+def getpeerbystream(stream: Union[StreamPair, asyncio.StreamWriter]) -> Optional[tuple[str, int]]:
+    """ Addes type checks to get_extra_info method for Transport """
+    if isinstance(stream, StreamPair):
+        stream = stream.writer
+
+    poss_info = stream.get_extra_info('peername')
+
+    if poss_info is not None \
+        and len(poss_info) >= 2 \
+        and isinstance(poss_info[0], str) \
+        and isinstance(poss_info[1], int):
+        return poss_info[:2]
+    else:
+        return None
 
 
 async def ainput(prompt: str='') -> str:

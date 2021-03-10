@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from argparse import ArgumentParser
 from typing import Any
 from dataclasses import dataclass, field
+
+from argparse import ArgumentParser
 from pathlib import Path
 
 import asyncio as aio
@@ -12,7 +13,7 @@ import logging
 
 from connection import (
     StreamPair, Message, Request,
-    ainput, merge_config_args, version_check
+    ainput, getpeerbystream, merge_config_args, version_check
 )
 
 
@@ -154,11 +155,12 @@ class Indexer:
 
             self.peers[pair] = PeerState(log=default_logger(logger))
 
-            info = writer.get_extra_info('peername')
-            remote = socket.gethostbyaddr(info[0])
-            logger.debug(f"connected to {username}: {remote}")
+            info = getpeerbystream(writer)
+            if info:
+                remote = socket.gethostbyaddr(info[0])
+                logger.debug(f"connected to {username}: {remote}")
 
-            await self.connect_loop(pair)
+                await self.connect_loop(pair)
 
         except Exception as e:
             logger.error(e)
@@ -215,9 +217,14 @@ class Indexer:
 
         await self.updates.join() # wait for no more updates
 
-        assoc_peers: set[tuple[str, int]] = {
-            loc.writer.get_extra_info('peername')[:2]
+        peers = (
+            getpeerbystream(loc) 
             for loc in self.get_location(filename)
+        )
+        assoc_peers: set[tuple[str, int]] = {
+            peer
+            for peer in peers
+            if peer is not None
         }
 
         await Message.write(pair.writer, assoc_peers)

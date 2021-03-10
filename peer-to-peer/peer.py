@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from time import time
 from typing import Any, NamedTuple, Optional, Union
 from dataclasses import dataclass, field
 
 from argparse import ArgumentParser
 from pathlib import Path
+from time import time
 
 import asyncio as aio
 import socket
@@ -15,7 +15,7 @@ import logging
 
 from connection import (
     CHUNK_SIZE, Message, Request, StreamPair,
-    ainput, merge_config_args, version_check
+    ainput, getpeerbystream, merge_config_args, version_check
 )
 
 
@@ -206,6 +206,7 @@ class Peer:
         pair = StreamPair(*pair)
 
         await self.download(picked, pair)
+        # will close in download
 
 
     def select_file(self, fileset: set[str]) -> str:
@@ -230,15 +231,25 @@ class Peer:
 
     
     async def download(self, filename: str, peer: StreamPair):
-        """ Client-size connection with any of the othe peers """
+        """ Client-side connection with any of the other peers """
         _, writer = peer
-        info = writer.get_extra_info('peername')
-        remote = socket.gethostbyaddr(info[0])
-        # username = await Message.read(reader, str)
-        logging.debug(f"connected to {remote}")
-        
-        await Message.write(writer, Request.DOWNLOAD)
-        await self.receive_file_loop(filename, peer)
+
+        try:
+            info = getpeerbystream(writer)
+            if not info: return
+
+            remote = socket.gethostbyaddr(info[0])
+            logging.debug(f"connected to {remote}")
+            
+            await Message.write(writer, Request.DOWNLOAD)
+            await self.receive_file_loop(filename, peer)
+
+        except Exception as e:
+            logging.error(e)
+
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
 
     async def receive_file_loop(self, filename: str, peer: StreamPair):
@@ -258,6 +269,7 @@ class Peer:
 
         got_file = False
         num_tries = 0
+
         while not got_file and num_tries < 5: # TODO: make param
             if num_tries > 0:
                 logging.info(f"retrying {filename} download")
@@ -268,10 +280,10 @@ class Peer:
             num_tries += 1
         
         await Message.write(writer, Request.SUCCESS)
-
         elapsed = time() - start_time
-        logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
+
         await Message.write(writer, elapsed)
+        logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
 
 
 
@@ -316,14 +328,13 @@ class Peer:
     async def upload(self, peer: StreamPair):
         """ Server-side connection with any of the other peers """
         reader, writer = peer
-
-        info = writer.get_extra_info('peername')
-        remote = socket.gethostbyaddr(info[0])
-        # username = await Message.read(reader, str)
-
-        logging.debug(f"connected to {remote}")
-
         try:
+            info = getpeerbystream(writer)
+            if not info: return
+
+            remote = socket.gethostbyaddr(info[0])
+            logging.debug(f"connected to {remote}")
+
             # just do one transaction, and close stream
             request = await Message.read(reader, Request)
             if request != Request.DOWNLOAD:
@@ -337,6 +348,7 @@ class Peer:
 
         finally:
             writer.close()
+            await writer.wait_closed()
 
 
     async def send_file_loop(self, peer: StreamPair):
@@ -370,6 +382,7 @@ class Peer:
     async def send_file(self, filepath: Path, writer: aio.StreamWriter):
         """ Used by server side to send file contents to a given client """
         logging.debug(f'trying to send file {filepath}')
+        # TODO: make logging specific to connection
 
         with open(filepath, 'rb') as f:
             checksum = hashlib.md5()
