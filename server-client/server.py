@@ -17,10 +17,10 @@ from connection import (
 )
 
 
-SERVER_PROMPT = """\
-1. list files on server
-2. Kill Server (any value besides 1 also works)
-Select an Option: """
+SERVER_PROMPT = (
+    "1. List files on server\n"
+    "2. Kill Server (any value besides 1 also works)\n"
+    "Select an Option: ")
 
 
 async def server_session(direct: Path):

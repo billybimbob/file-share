@@ -44,7 +44,7 @@ class Peer:
     dir_update: aio.Event
     index_start: IndexInfo
 
-    PROMPT = (""
+    PROMPT = (
         "1. List all available files in system\n"
         "2. Download a file\n"
         "3. Kill Server (any value besides 1 & 2 also work)\n"
@@ -64,7 +64,7 @@ class Peer:
         Creates all the state information for a peer node, use to method
         start_server to activate the peer node
         """
-        self.port = min(1, port)
+        self.port = max(1, port)
         self.user = socket.gethostname() if user is None else user
 
         if directory is None:

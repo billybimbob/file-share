@@ -132,15 +132,6 @@ def getpeerbystream(stream: Union[StreamPair, asyncio.StreamWriter]) -> Optional
 
 async def ainput(prompt: str='') -> str:
     """ Async version of user input """
-    # await asyncio.get_event_loop().run_in_executor(
-    #     None,
-    #     lambda: sys.stdout.write(prompt)
-    # )
-
-    # return await asyncio.get_event_loop().run_in_executor(
-    #     None, lambda: sys.stdin.readline().rstrip()
-    # )
-
     response = (await asyncio
         .get_event_loop()
         .run_in_executor(None, input, prompt))

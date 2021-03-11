@@ -19,11 +19,11 @@ from connection import (
 )
 
 
-CLIENT_PROMPT = """\
-1. list files on server
-2. Download file
-3. Exit (any value besides 1 or 2 also works)
-Select an Option: """
+CLIENT_PROMPT = (
+    "1. list files on server\n"
+    "2. Download file\n"
+    "3. Exit (any value besides 1 or 2 also works)\n"
+    "Select an Option: ")
 
 
 async def client_session(

@@ -32,7 +32,7 @@ class Indexer:
     peers: dict[StreamPair, PeerState]
     updates: aio.Queue[StreamPair]
 
-    PROMPT = (""
+    PROMPT = (
         "1. List active peers\n"
         "2. List all files in the system\n"
         "3. Kill Server (any value besides 1 & 2 also work)\n"
@@ -44,7 +44,7 @@ class Indexer:
         Create the state structures for an indexing node; to start running the server, 
         run the function start_server
         """
-        self.port = min(1, port)
+        self.port = max(1, port)
         self.peers = {}
         self.updates = aio.Queue()
 
@@ -138,9 +138,15 @@ class Indexer:
                 print('The peers connected are: ')
                 print(f'{peer_users}\n')
 
+            elif option == '2':
+                files = '\n'.join(self.get_files())
+                print('The files on the system are:')
+                print(f'{files}\n')
+
             else:
-                print('Exiting server')    
                 break
+
+        print('Exiting server')    
 
 
     #region peer connection
