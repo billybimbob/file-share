@@ -121,10 +121,10 @@ def getpeerbystream(stream: Union[StreamPair, asyncio.StreamWriter]) -> Optional
 
     poss_info = stream.get_extra_info('peername')
 
-    if poss_info is not None \
-        and len(poss_info) >= 2 \
-        and isinstance(poss_info[0], str) \
-        and isinstance(poss_info[1], int):
+    if (poss_info is not None
+        and len(poss_info) >= 2
+        and isinstance(poss_info[0], str)
+        and isinstance(poss_info[1], int)):
         return poss_info[:2]
     else:
         return None
@@ -132,15 +132,20 @@ def getpeerbystream(stream: Union[StreamPair, asyncio.StreamWriter]) -> Optional
 
 async def ainput(prompt: str='') -> str:
     """ Async version of user input """
+    # await asyncio.get_event_loop().run_in_executor(
+    #     None,
+    #     lambda: sys.stdout.write(prompt)
+    # )
 
-    await asyncio.get_event_loop().run_in_executor(
-        None,
-        lambda: sys.stdout.write(prompt)
-    )
+    # return await asyncio.get_event_loop().run_in_executor(
+    #     None, lambda: sys.stdin.readline().rstrip()
+    # )
 
-    return await asyncio.get_event_loop().run_in_executor(
-        None, lambda: sys.stdin.readline().rstrip()
-    )
+    response = (await asyncio
+        .get_event_loop()
+        .run_in_executor(None, input, prompt))
+
+    return response.rstrip()
 
 
 # def shallow_obj(map: Dict[str, Any]) -> object:

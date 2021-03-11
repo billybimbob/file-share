@@ -86,8 +86,8 @@ def path_connection(path: Path) \
     """
     Creates a stream callback, and specifying the path for the server directory
     """
-    return lambda reader, writer: \
-        server_connection(path, StreamPair(reader, writer))
+    return (lambda reader, writer:
+        server_connection(path, StreamPair(reader, writer)))
 
 
 

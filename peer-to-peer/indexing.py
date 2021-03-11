@@ -32,11 +32,11 @@ class Indexer:
     peers: dict[StreamPair, PeerState]
     updates: aio.Queue[StreamPair]
 
-    PROMPT = "" \
-        "1. List active peers\n" \
-        "2. List all files in the system\n" \
-        "3. Kill Server (any value besides 1 & 2 also work)\n" \
-        "Select an Option: "
+    PROMPT = (""
+        "1. List active peers\n"
+        "2. List all files in the system\n"
+        "3. Kill Server (any value besides 1 & 2 also work)\n"
+        "Select an Option: ")
     
 
     def __init__(self, port: int, *args: Any, **kwargs: Any):
@@ -77,7 +77,7 @@ class Indexer:
         """
         def to_conneciton(reader: aio.StreamReader, writer: aio.StreamWriter):
             """ Indexeder closure as a stream callback """
-            return self.connected(StreamPair(reader, writer))
+            return self._connected(StreamPair(reader, writer))
 
         host = socket.gethostname()
         server = await aio.start_server(to_conneciton, host, self.port)
@@ -87,10 +87,10 @@ class Indexer:
                 addr = server.sockets[0].getsockname()[0]
                 logging.info(f'indexing server on {addr}')
 
-                updates = aio.create_task(self.update_loop())
+                updates = aio.create_task(self._update_loop())
                 aio.create_task(server.serve_forever())
 
-                await aio.create_task(self.session())  
+                await aio.create_task(self._session())  
                 updates.cancel()
 
         await server.wait_closed()
@@ -99,20 +99,20 @@ class Indexer:
 
     #region update queue handlers
 
-    async def update_loop(self):
+    async def _update_loop(self):
         """
         Handles query task put on the query queue, will run until cancelled
         """
         try:
             while True:
                 update_loc = await self.updates.get()
-                aio.create_task(self.update_files(update_loc)) # will call task_done
+                aio.create_task(self._update_files(update_loc)) # will call task_done
 
         except aio.CancelledError:
             pass
 
 
-    async def update_files(self, pair: StreamPair):
+    async def _update_files(self, pair: StreamPair):
         """ Query the given stream for updated file list """
         pair_state = self.peers[pair]
         files: frozenset[str] = await Message.read(pair.reader, frozenset)
@@ -126,7 +126,7 @@ class Indexer:
     #endregion
 
 
-    async def session(self):
+    async def _session(self):
         """ Cli for indexer """
         while option := await ainput(Indexer.PROMPT):
             if option == '1':
@@ -145,7 +145,7 @@ class Indexer:
 
     #region peer connection
 
-    async def connected(self, pair: StreamPair):
+    async def _connected(self, pair: StreamPair):
         """ A connection with a specific peer """
         reader, writer = pair
         logger = logging.getLogger()
@@ -161,7 +161,7 @@ class Indexer:
                 remote = socket.gethostbyaddr(info[0])
                 logger.debug(f"connected to {username}: {remote}")
 
-                await self.connect_loop(pair)
+                await self._connect_loop(pair)
 
         except Exception as e:
             logger.error(e)
@@ -178,24 +178,24 @@ class Indexer:
             await writer.wait_closed()
 
 
-    async def connect_loop(self, pair: StreamPair):
+    async def _connect_loop(self, pair: StreamPair):
         """ Request loop handler for each peer connection """
 
         while request := await Message.read(pair.reader, Request):
             if request == Request.GET_FILES:
-                await self.send_files(pair)
+                await self._send_files(pair)
 
             elif request == Request.UPDATE:
-                await self.receive_update(pair)
+                await self._receive_update(pair)
 
             elif request == Request.QUERY:
-                await self.query_file(pair)
+                await self._query_file(pair)
 
             else:
                 break
 
     
-    async def send_files(self, pair: StreamPair):
+    async def _send_files(self, pair: StreamPair):
         """
         Handles the get files request, and sends files to given socket
         """
@@ -203,7 +203,7 @@ class Indexer:
         await Message.write(pair.writer, self.get_files())
 
 
-    async def receive_update(self, pair: StreamPair):
+    async def _receive_update(self, pair: StreamPair):
         """ Notify update handler of a update task, and wait for completion """
         signal = self.peers[pair].signal
         signal.clear()
@@ -211,7 +211,7 @@ class Indexer:
         await signal.wait() # block stream access til finished
 
 
-    async def query_file(self, pair: StreamPair):
+    async def _query_file(self, pair: StreamPair):
         """ Reply to stream with the peers that have specfied file """
         filename = await Message.read(pair.reader, str)
         self.peers[pair].log.debug(f'querying for file {filename}')
@@ -234,7 +234,7 @@ class Indexer:
 
 
 
-def init_log(log: str):
+def init_log(log: str, *args: Any, **kwargs: Any):
     """ Specifies logging format and location """
     log_path = Path(f'./{log}')
     log_path.parent.mkdir(exist_ok=True, parents=True)
@@ -258,12 +258,13 @@ if __name__ == "__main__":
 
     args = ArgumentParser("creates and starts an indexing server node")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
-    args.add_argument("-d", "--directory", default='', help="the directory to where the server hosts files")
-    args.add_argument("-l", "--log", default='server.log', help="the file to write log info to")
+    args.add_argument("-l", "--log", default='indexer.log', help="the file to write log info to")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port to run the server on")
 
     args = args.parse_args()
     args = merge_config_args(args)
+
+    init_log(**args)
 
     indexer = Indexer(**args)
     aio.run(indexer.start_server())
