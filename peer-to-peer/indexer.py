@@ -75,33 +75,39 @@ class Indexer:
         Intilizes the indexer server and workers; awaiting on 
         this method will wait until the server is closed
         """
-        def to_conneciton(reader: aio.StreamReader, writer: aio.StreamWriter):
-            """ Indexeder closure as a stream callback """
-            return self._connected(StreamPair(reader, writer))
+        def to_connection(reader: aio.StreamReader, writer: aio.StreamWriter):
+            """ Indexer closure as a stream callback """
+            return self._peer_connected(StreamPair(reader, writer))
 
-        host = socket.gethostname()
-        server = await aio.start_server(to_conneciton, host, self.port)
+        try:
+            host = socket.gethostname()
+            server = await aio.start_server(to_connection, host, self.port)
 
-        async with server:
-            if server.sockets:
-                addr = server.sockets[0].getsockname()[0]
-                logging.info(f'indexing server on {addr}')
+            async with server:
+                if server.sockets:
+                    addr = server.sockets[0].getsockname()[0]
+                    logging.info(f'indexing server on {addr}')
 
-                updates = aio.create_task(self._update_loop())
-                aio.create_task(server.serve_forever())
+                    updates = aio.create_task(self._update_loop())
+                    aio.create_task(server.serve_forever())
 
-                await aio.create_task(self._session())  
-                updates.cancel()
+                    await aio.create_task(self._session())  
+                    updates.cancel()
 
-        await server.wait_closed()
+            await server.wait_closed()
+
+        except Exception as e:
+            logging.error(e)
+
         logging.info("index server stopped")
+
 
 
     #region update queue handlers
 
     async def _update_loop(self):
         """
-        Handles query task put on the query queue, will run until cancelled
+        Handles update tasks put on the update queue, will run until cancelled
         """
         try:
             while True:
@@ -151,7 +157,7 @@ class Indexer:
 
     #region peer connection
 
-    async def _connected(self, pair: StreamPair):
+    async def _peer_connected(self, pair: StreamPair):
         """ A connection with a specific peer """
         reader, writer = pair
         logger = logging.getLogger()
@@ -206,6 +212,7 @@ class Indexer:
         Handles the get files request, and sends files to given socket
         """
         self.peers[pair].log.debug("getting all files in cluster")
+        await self.updates.join() # wait for no more file updates
         await Message.write(pair.writer, self.get_files())
 
 
@@ -222,11 +229,11 @@ class Indexer:
         filename = await Message.read(pair.reader, str)
         self.peers[pair].log.debug(f'querying for file {filename}')
 
-        await self.updates.join() # wait for no more updates
+        await self.updates.join() # wait for no more file updates
 
         peers = (
-            getpeerbystream(loc) 
-            for loc in self.get_location(filename)
+            getpeerbystream(pair) 
+            for pair in self.get_location(filename)
         )
         assoc_peers: set[tuple[str, int]] = {
             peer

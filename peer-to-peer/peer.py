@@ -103,37 +103,46 @@ class Peer:
             """ Indexeder closure as a stream callback """
             return self._peer_upload(StreamPair(reader, writer))
 
-        host = socket.gethostname()
-        server = await aio.start_server(to_upload, host, self.port)
+        try:
+            host = socket.gethostname()
+            server = await aio.start_server(to_upload, host, self.port)
 
-        async with server:
-            if server.sockets:
-                addr = server.sockets[0].getsockname()[0]
-                logging.info(f'indexing server on {addr}')
+            async with server:
+                if server.sockets:
+                    addr = server.sockets[0].getsockname()[0]
+                    logging.info(f'indexing server on {addr}')
 
-                start = self.index_start
-                in_pair = await aio.open_connection(start.host, start.port)
-                in_pair = StreamPair(*in_pair)
+                    start = self.index_start
+                    in_pair = await aio.open_connection(start.host, start.port)
+                    in_pair = StreamPair(*in_pair)
 
-                indexer = IndexState(start, in_pair)
+                    indexer = IndexState(start, in_pair)
 
-                await Message.write(in_pair.writer, self.user)
+                    await Message.write(in_pair.writer, self.user)
 
-                checker = aio.create_task(self._check_dir())
-                sender = aio.create_task(self._send_dir(indexer))
+                    checker = aio.create_task(self._check_dir())
+                    sender = aio.create_task(self._send_dir(indexer))
 
-                aio.create_task(server.serve_forever())
+                    await self.dir_update.wait()
+                    # only accept connections user input after at least one dir_update
+                    # should not deadlock
 
-                session = aio.create_task(self._session(indexer))
-                conn = aio.create_task(self._watch_connection(indexer))
+                    aio.create_task(server.serve_forever())
 
-                _, pend = await aio.wait([session, conn], return_when=aio.FIRST_COMPLETED)
+                    session = aio.create_task(self._session(indexer))
+                    conn = aio.create_task(self._watch_connection(indexer))
 
-                checker.cancel()
-                sender.cancel()
-                for p in pend: p.cancel()
+                    _, pend = await aio.wait([session, conn], return_when=aio.FIRST_COMPLETED)
 
-        await server.wait_closed()
+                    checker.cancel()
+                    sender.cancel()
+                    for p in pend: p.cancel()
+
+            await server.wait_closed()
+
+        except Exception as e:
+            logging.error(e)
+
 
 
     async def _check_dir(self):
@@ -166,6 +175,7 @@ class Peer:
                 async with indexer.access:
                     await Message.write(writer, Request.UPDATE)
                     await Message.write(writer, self.get_files())
+                    # should be only place where dir_update is cleared
                     self.dir_update.clear()
 
         except aio.CancelledError:
@@ -220,11 +230,16 @@ class Peer:
         print('\n'.join(files))
 
 
+
     async def _run_download(self, indexer: IndexState):
         """ Queries the indexer, prompts the user, then fetches file from peer """
         reader, writer = indexer.pair
         files = await self._system_files(indexer)
         files = set(files) - self.get_files()
+
+        if len(files) == 0:
+            logging.error("no files can be downloaded")
+            return
 
         picked = self._select_file(files)
 
@@ -237,13 +252,10 @@ class Peer:
             logging.error(f"location for {picked} could not be found")
             return
         
-        # open connection to peer
+        # use a random peer target
         target = peers.pop()
-        pair = await aio.open_connection(target[0], target[1])
-        pair = StreamPair(*pair)
+        await self._peer_download(picked, target)
 
-        await self._peer_download(picked, pair)
-        # will close in download
         self.dir_update.set()
 
 
@@ -251,14 +263,14 @@ class Peer:
         """ Take in user input to select a file from the given set """
         # sort might be slow
         files = sorted(fileset)
-        options = (f'{i+1}: {file}' for i, file in enumerate(fileset))
+        options = (f'{i+1}: {file}' for i, file in enumerate(files))
 
         choice = None
         while choice is None or choice not in fileset:
             if choice: print('invalid file entered')
 
             print('\n'.join(options))
-            choice = input("enter file to download")
+            choice = input("enter file to download: ")
 
             if choice.isnumeric():
                 idx = int(choice)-1
@@ -268,9 +280,11 @@ class Peer:
         return choice
 
     
-    async def _peer_download(self, filename: str, peer: StreamPair):
+    async def _peer_download(self, filename: str, target: tuple[str, int]):
         """ Client-side connection with any of the other peers """
-        _, writer = peer
+        pair = await aio.open_connection(target[0], target[1])
+        pair = StreamPair(*pair)
+        writer = pair.writer
 
         try:
             info = getpeerbystream(writer)
@@ -280,7 +294,7 @@ class Peer:
             logging.debug(f"connected to {remote}")
             
             await Message.write(writer, Request.DOWNLOAD)
-            await self._receive_file_loop(filename, peer)
+            await self._receive_file_loop(filename, pair)
 
         except Exception as e:
             logging.error(e)
