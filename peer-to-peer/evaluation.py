@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 from collections.abc import Sequence
+from typing import Union
 from connection import CHUNK_SIZE
 
 from argparse import ArgumentParser
 from pathlib import Path
 
 import sys
+import os
 import shutil
 
 import asyncio as aio
@@ -19,10 +21,12 @@ import shlex
 
 CONFIGS = 'configs'
 SERVERS = 'servers'
-CLIENTS = 'clients' # TODO: change to peers
+PEERS = 'peers' # TODO: change to peers
 LOGS = 'logs'
 
 # endregion
+
+PEER_PORT = 8889
 
 
 async def start_indexer(log: str) -> proc.Process:
@@ -47,43 +51,86 @@ async def stop_indexer(indexer: proc.Process):
 
 
 
-async def create_peers(num_peers: int, label: str, verbosity: int) -> Sequence[proc.Process]:
+class PeerRun:
+    """
+    Ran peer process, and the initial files from the peer directory before
+    it was ran
+    """
+    process: proc.Process
+    dir: Path
+    start_files: frozenset[Path]
+
+    def __init__(self, process: proc.Process, dir: Union[str, Path]):
+        self.process = process
+        self.dir = dir if isinstance(dir, Path) else Path(dir)
+        self.start_files = frozenset(self.dir.iterdir())
+
+
+
+async def create_peers(num_peers: int, file_size: str, verbosity: int) -> Sequence[PeerRun]:
     """ Creates a number of client processes """
-    return await aio.gather(*[
-        init_peer(label, i, verbosity)
+    label = f'{num_peers}c{file_size}f'
+    src_dir = f'{SERVERS}/{file_size}'
+
+    peers = await aio.gather(*[
+        init_peer(label, i, verbosity, src_dir)
         for i in range(num_peers)
     ])
 
+    return peers
 
-async def init_peer(label: str, id: int, verbosity: int) -> proc.Process:
+
+async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRun:
     """
     Starts a peer process, and also waits for a peer response, which should 
     indicate that the peer is ready to take in user input
     """
-    # TODO: change to peer dir structure and fix args
-    peer_dir = f'{CLIENTS}/{id}'
-    log = f'{LOGS}/clients/client{id}-{label}.log'
-    
-    if ((logpath := Path(log)).exists()):
-        open(log, 'w').close()
-    else:
-        logpath.parent.mkdir(exist_ok=True, parents=True)
+    user = f'peer{id}'
+    log = f'{LOGS}/peers/{user}-{label}.log'
+    peer_dir = f'{PEERS}/{id}'
 
-    if Path(peer_dir).exists():
-        shutil.rmtree(peer_dir)
+    init_peer_paths(user, log, peer_dir, src_dir)
 
     peer = await aio.create_subprocess_exec(
         *shlex.split(
-            f"./peer.py -c {CONFIGS}/eval-client.ini "
-            f"-d {peer_dir} -u peer-{id} -l {log} -v {verbosity}"
+            f"./peer.py -c {CONFIGS}/eval-peer.ini "
+            f"-d {peer_dir} -u {user} -l {log} -v {verbosity}"
         ),
         stdin=proc.PIPE,
         stdout=proc.PIPE
     )
 
+    await get_response(peer)
+
+    return PeerRun(peer, peer_dir)
+
+
+def init_peer_paths(user: str, log: str, peer_dir: str, src_dir: str):
+    if ((logpath := Path(log)).exists()):
+        open(log, 'w').close()
+    else:
+        logpath.parent.mkdir(exist_ok=True, parents=True)
+
+    if not (peer_path := Path(peer_dir)).exists():
+        peer_path.mkdir(parents=True)
+        shutil.copytree(src_dir, peer_dir)
+
+        old_names = list(peer_path.iterdir())
+        new_names = [
+            old.with_name(f'{old.name}-{user}')
+            for old in old_names
+        ]
+
+        # rename files
+        for old, new in zip(old_names, new_names):
+            shutil.move(str(old), str(new))
+
+
+
+async def get_response(peer: proc.Process):
     if not peer.stdin or not peer.stdout:
-        print(f'peer {id} failed to init stdin')
-        return peer
+        print('cannot get response from peer')
+        return
 
     peer.stdin.write('1\n'.encode())
     await peer.stdin.drain()
@@ -98,38 +145,51 @@ async def init_peer(label: str, id: int, verbosity: int) -> proc.Process:
     except aio.TimeoutError:
         pass
 
-    return peer
 
 
-async def run_downloads(clients: Sequence[proc.Process]):
+async def run_downloads(peers: Sequence[PeerRun], request: int):
     """ Passes input to the client processes to request downloads from the server """
     # TODO: modify to use peers and to not use communicate
-    all_files_in = "1\n\n" * 9 # should be 10 files on each server
-    client_input = f'2\n{all_files_in}\n'.encode()
-    await aio.gather(*[
-        c.communicate(client_input) for c in clients
-    ])
+    # does not account for the case where the are no files to download, should not happen
+    file_requests = "2\n1\n" * request
+    client_input = f'{file_requests}'.encode()
+
+    async def request_peer(peer: PeerRun):
+        if peer.process.stdin is None:
+            print('peer stdin is None')
+            return
+
+        peer.process.stdin.write(client_input)
+        await peer.process.stdin.drain()
+
+    await aio.gather(*[ request_peer(p) for p in peers ])
 
 
-async def stop_peers(peers: Sequence[proc.Process]):
+async def stop_peers(peers: Sequence[PeerRun]):
     """ Sends input to all the clients that should make them cleanly exit """
     await aio.gather(*[
-        p.communicate('\n'.encode()) for p in peers
+        p.process.communicate('\n'.encode()) for p in peers
     ])
+
+    # remove downloaded files during run
+    for p in peers:
+        new_files = set(p.dir.iterdir())
+        new_files.difference_update(p.start_files)
+        for new in new_files:
+            os.remove(new)
 
 
 
 async def run_cycle(num_peers: int, file_size: str, repeat: int, verbosity: int):
     """ Manages the creation, running, and killing of server and client procs """
 
-    run_label = f'{num_peers}c{file_size}f'
-    indexer_log = f'{LOGS}/indexer-{run_label}.log'
+    label = f'{num_peers}c{file_size}f'
+    indexer_log = f'{LOGS}/indexer-{label}.log'
     indexer = await start_indexer(indexer_log)
 
-    for _ in range(repeat):
-        peers = await create_peers(num_peers, run_label, verbosity)
-        await run_downloads(peers)
-        await stop_peers(peers)
+    peers = await create_peers(num_peers, file_size, verbosity)
+    await run_downloads(peers, repeat)
+    await stop_peers(peers)
     
     await stop_indexer(indexer)
 

@@ -120,12 +120,15 @@ class Peer:
 
                     await Message.write(in_pair.writer, self.user)
 
-                    checker = aio.create_task(self._check_dir())
-                    sender = aio.create_task(self._send_dir(indexer))
+                    # make sure that event is listening before it can be set and cleared
+                    first_update = aio.create_task(self.dir_update.wait())
 
-                    await self.dir_update.wait()
-                    # only accept connections user input after at least one dir_update
-                    # should not deadlock
+                    sender = aio.create_task(self._send_dir(indexer))
+                    checker = aio.create_task(self._check_dir())
+
+                    # only accept connections and user input after a dir_update
+                    # should not deadlock, keep eye on
+                    await first_update
 
                     aio.create_task(server.serve_forever())
 
@@ -186,7 +189,7 @@ class Peer:
         """ Coroutine that completes when the indexer connection is closed """
         try:
             check = aio.Condition()
-            await check.wait_for(lambda: indexer.pair.reader.at_eof())
+            await check.wait_for(indexer.pair.reader.at_eof)
 
         except aio.CancelledError:
             # indexer won't be reading, so don't have to eof
@@ -265,17 +268,16 @@ class Peer:
         files = sorted(fileset)
         options = (f'{i+1}: {file}' for i, file in enumerate(files))
 
-        choice = None
-        while choice is None or choice not in fileset:
-            if choice: print('invalid file entered')
+        print('\n'.join(options))
+        choice = input("enter file to download: ")
 
-            print('\n'.join(options))
-            choice = input("enter file to download: ")
+        if choice.isnumeric():
+            idx = int(choice)-1
+            if idx >= 0 and idx < len(files):
+                choice = files[idx]
 
-            if choice.isnumeric():
-                idx = int(choice)-1
-                if idx >= 0 and idx < len(files):
-                    choice = files[idx]
+        if choice not in fileset:
+            print('invalid file entered')
         
         return choice
 
