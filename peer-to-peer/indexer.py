@@ -179,15 +179,18 @@ class Indexer:
                 await self._connect_loop(pair)
 
         except aio.IncompleteReadError:
-            # transport should be close if read fail
+            # transport should be closed if read fail
             pass
 
         except Exception as e:
             logger.error(e)
             await Message.write(writer, e)
-            writer.write_eof()
 
         finally:
+            if not reader.at_eof():
+                print('writing eof')
+                writer.write_eof()
+
             logger.debug('ending connection')
             writer.close()
 

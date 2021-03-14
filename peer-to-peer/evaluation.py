@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from collections.abc import Sequence
 from typing import Union
+from collections.abc import Sequence
 from connection import CHUNK_SIZE, version_check
 
 from argparse import ArgumentParser

@@ -149,6 +149,7 @@ class Peer:
         except Exception as e:
             logging.error(e)
 
+        logging.debug("disconnected from indexing server")
         logging.debug("ending peer")
 
 
@@ -193,9 +194,10 @@ class Peer:
     async def _watch_connection(self, indexer: IndexState):
         """ Coroutine that completes when the indexer connection is closed """
         try:
-            check = aio.Condition()
-            async with check:
-                await check.wait_for(indexer.pair.reader.at_eof)
+            while not indexer.pair.reader.at_eof():
+                await aio.sleep(8) # TODO: make interval param
+
+            print('\nConnection to indexer was closed')
 
         except aio.CancelledError:
             # indexer won't be reading, so don't have to eof
@@ -242,6 +244,8 @@ class Peer:
 
     async def _run_download(self, indexer: IndexState):
         """ Queries the indexer, prompts the user, then fetches file from peer """
+        start_time = time()
+
         reader, writer = indexer.pair
         files = await self._system_files(indexer)
         files = set(files) - self.get_files()
@@ -258,6 +262,10 @@ class Peer:
         await Message.write(writer, picked)
 
         peers: set[tuple[str, int]] = await Message.read(reader, set)
+        elapsed = time() - start_time
+
+        logging.info(f"query for {picked} took {elapsed:.4f} secs")
+
         if len(peers) == 0:
             logging.error(f"location for {picked} could not be found")
             return
@@ -291,19 +299,24 @@ class Peer:
     
     async def _peer_download(self, filename: str, target: tuple[str, int]):
         """ Client-side connection with any of the other peers """
-        pair = await aio.open_connection(target[0], target[1])
+        logging.debug(f"attempting connection to {target}")
+
+        pair = await aio.open_connection(*target)
         pair = StreamPair(*pair)
         writer = pair.writer
+
+        log = logging.getLogger()
 
         try:
             info = getpeerbystream(writer)
             if not info: return
 
             remote = socket.gethostbyaddr(info[0])
-            logging.debug(f"connected to {remote}")
+            log = logging.getLogger(remote[0])
+            log.debug(f"connected")
             
             await Message.write(writer, Request.DOWNLOAD)
-            await self._receive_file_loop(filename, pair)
+            await self._receive_file_loop(filename, pair, log)
 
         except Exception as e:
             logging.error(e)
@@ -313,7 +326,7 @@ class Peer:
             await writer.wait_closed()
 
 
-    async def _receive_file_loop(self, filename: str, peer: StreamPair):
+    async def _receive_file_loop(self, filename: str, peer: StreamPair, log: logging.Logger):
         """ Runs multiple attempts to download a file from the server if needed """
         start_time = time()
         reader, writer = peer
@@ -330,21 +343,23 @@ class Peer:
 
         got_file = False
         num_tries = 0
+        tot_read = 0
 
         while not got_file and num_tries < 5: # TODO: make param
             if num_tries > 0:
-                logging.info(f"retrying {filename} download")
+                log.info(f"retrying {filename} download")
                 await Message.write(writer, Request.RETRY)
 
-            got_file, byte_amt = await self._receive_file(filepath, reader)
-            await Message.write(writer, byte_amt)
+            got_file, amt_read = await self._receive_file(filepath, reader)
             num_tries += 1
-        
-        await Message.write(writer, Request.SUCCESS)
-        elapsed = time() - start_time
+            tot_read += amt_read
 
-        await Message.write(writer, elapsed)
-        logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
+        await Message.write(writer, Request.SUCCESS)
+        log.info(f"sucessfully got file")
+
+        elapsed = time() - start_time
+        log.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
+        log.info(f'read {(tot_read / 1000):.2f} KB')
 
 
 
@@ -358,7 +373,6 @@ class Peer:
 
         with open(filepath, 'w+b') as f:
             filesize = await Message.read(reader, int)
-            # filesize = int(filesize) # should always be str
 
             while amt_read < filesize:
                 # no messages since each file chunk is part of same "message"
@@ -366,9 +380,7 @@ class Peer:
                 f.write(chunk)
                 amt_read += len(chunk)
 
-            logging.info(f'read {(amt_read / 1000):.2f} KB')
             f.seek(0)
-
             local_checksum = hashlib.md5()
             for line in f:
                 local_checksum.update(line)
@@ -376,12 +388,7 @@ class Peer:
             local_checksum = local_checksum.digest()
             checksum_passed = local_checksum == checksum
 
-            if checksum_passed:
-                logging.info("checksum passed")
-            else:
-                logging.error("checksum failed")
-
-        return (checksum_passed, amt_read)
+        return checksum_passed, amt_read
 
     #endregion
 
@@ -389,35 +396,43 @@ class Peer:
     async def _peer_upload(self, peer: StreamPair):
         """ Server-side connection with any of the other peers """
         reader, writer = peer
+        log = logging.getLogger()
+
         try:
             info = getpeerbystream(writer)
             if not info: return
 
             remote = socket.gethostbyaddr(info[0])
-            logging.debug(f"connected to {remote}")
+            log = logging.getLogger(remote[0])
+            log.debug(f"connected")
 
             # just do one transaction, and close stream
             request = await Message.read(reader, Request)
             if request != Request.DOWNLOAD:
                 raise RuntimeError("Only download requests are possible")
 
-            await self._send_file_loop(peer)
+            await self._send_file_loop(peer, log)
 
         except Exception as e:
-            logging.error(e)
+            log.error(e)
             await Message.write(writer, e)
-            writer.write_eof()
 
         finally:
+            if not reader.at_eof():
+                writer.write_eof()
+
             writer.close()
             await writer.wait_closed()
 
+        log.debug(f"disconnected")
 
-    async def _send_file_loop(self, peer: StreamPair):
+
+    async def _send_file_loop(self, peer: StreamPair, log: logging.Logger):
         """
         Runs multiple attempts to send a file based on the receiver response
         """
-        logging.info("waiting for selected file")
+        start_time = time()
+        log.info("waiting for selected file")
         reader, writer = peer
 
         filename = await Message.read(reader, str)
@@ -427,24 +442,22 @@ class Peer:
         should_send = True
 
         while should_send:
-            await self._send_file(filepath, writer)
-
-            amt_read = await Message.read(reader, int)
+            log.debug(f'trying to send file {filepath}')
+            amt_read = await self._send_file(filepath, writer)
             tot_bytes += amt_read
 
             success = await Message.read(reader, Request)
             should_send = success != Request.SUCCESS
 
-        elapsed = await Message.read(reader, float)
-        logging.debug(
+        elapsed = time() - start_time
+        log.debug(
             f'transfer of {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs'
         )
 
 
-    async def _send_file(self, filepath: Path, writer: aio.StreamWriter):
+    async def _send_file(self, filepath: Path, writer: aio.StreamWriter) -> int:
         """ Used by server side to send file contents to a given client """
-        logging.debug(f'trying to send file {filepath}')
-        # TODO: make logging specific to connection
+        filesize = filepath.stat().st_size
 
         with open(filepath, 'rb') as f:
             checksum = hashlib.md5()
@@ -455,12 +468,13 @@ class Peer:
             # logger.info(f'checksum of: {checksum}')
             await Message.write(writer, checksum)
 
-            filesize = filepath.stat().st_size
             await Message.write(writer, filesize)
 
             f.seek(0)
             writer.writelines(f) # don't need to encode
             await writer.drain()
+
+        return filesize
         
 
 
@@ -471,7 +485,7 @@ def init_log(log: str, verbosity: int, **kwargs: Any):
     log_path.parent.mkdir(exist_ok=True, parents=True)
 
     log_settings = {
-        'format': "%(levelname)s: %(message)s",
+        'format': "%(levelname)s: %(name)s: %(message)s",
         'level': logging.getLevelName(verbosity)
     }
 
