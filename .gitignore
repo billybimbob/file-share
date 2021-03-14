@@ -1,11 +1,1 @@
-__pycache__
-.vscode
-
-servers
-clients
-times
-
-out*
-*ref*
-*dir*
-*.log
+settings.json

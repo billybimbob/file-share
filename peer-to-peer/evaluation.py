@@ -152,7 +152,11 @@ async def stop_peers(peers: Sequence[PeerRun]):
         new_files = set(p.dir.iterdir())
         new_files.difference_update(p.start_files)
         for new in new_files:
-            os.remove(new)
+            if new.is_dir:
+                shutil.rmtree(new)
+                new.rmdir()
+            else:
+                os.remove(new)
 
 
 
@@ -199,7 +203,7 @@ async def run_cycle(num_peers: int, file_size: str, repeat: int, verbosity: int)
 if __name__ == "__main__":
     version_check()
 
-    args = ArgumentParser("Runs various configurations for server client set ups")
+    args = ArgumentParser("P2P Evaluator")
     args.add_argument("-f", "--file_size", choices=['128', '512', '2k', '8k', '32k'], default='128', help="the size of each file downloaded")
     args.add_argument("-n", "--num_peers", type=int, default=4, help="the number of concurrent clients")
     args.add_argument("-r", "--repeat", type=int, default=2, help="the amount of repeated runs")

@@ -309,7 +309,7 @@ if __name__ == "__main__":
     version_check()
     logging.getLogger('asyncio').setLevel(logging.WARNING)
 
-    args = ArgumentParser("creates a client and connect to a server")
+    args = ArgumentParser(description="creates a client and connect to a server")
     args.add_argument("-a", "--address", default=None, help="ip address of the server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--directory", default='', help="the client download folder")

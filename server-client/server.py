@@ -198,7 +198,7 @@ if __name__ == "__main__":
     version_check()
     logging.getLogger('asyncio').setLevel(logging.WARNING)
 
-    args = ArgumentParser("creates a server")
+    args = ArgumentParser(description="creates a server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--directory", default='', help="the directory to where the server hosts files")
     args.add_argument("-l", "--log", default='server.log', help="the file to write log info to")

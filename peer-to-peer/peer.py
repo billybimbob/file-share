@@ -47,7 +47,7 @@ class Peer:
     PROMPT = (
         "1. List all available files in system\n"
         "2. Download a file\n"
-        "3. Kill Server (any value besides 1 & 2 also work)\n"
+        "3. Kill Server (any value besides 1 & 2 also works)\n"
         "Select an Option: ")
 
 
@@ -90,7 +90,9 @@ class Peer:
     def get_files(self) -> frozenset[str]:
         """ Gets all the files from the direct path attribute """
         return frozenset(
-            file.name for file in self.direct.iterdir()
+            p.name
+            for p in self.direct.iterdir()
+            if p.is_file()
         )
 
 
@@ -499,7 +501,7 @@ if __name__ == "__main__":
     version_check()
     logging.getLogger('asyncio').setLevel(logging.WARNING)
 
-    args = ArgumentParser("creates a peer node")
+    args = ArgumentParser(description="creates a peer node")
     args.add_argument("-a", "--address", default=None, help="ip address of the indexing server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--directory", default='', help="the client download folder")

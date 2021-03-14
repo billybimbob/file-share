@@ -35,7 +35,7 @@ class Indexer:
     PROMPT = (
         "1. List active peers\n"
         "2. List all files in the system\n"
-        "3. Kill Server (any value besides 1 & 2 also work)\n"
+        "3. Kill Server (any value besides 1 & 2 also works)\n"
         "Select an Option: ")
     
 
@@ -280,7 +280,7 @@ if __name__ == "__main__":
     version_check()
     logging.getLogger('asyncio').setLevel(logging.WARNING)
 
-    args = ArgumentParser("creates and starts an indexing server node")
+    args = ArgumentParser(description="creates and starts an indexing server node")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-l", "--log", default='indexer.log', help="the file to write log info to")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port to run the server on")

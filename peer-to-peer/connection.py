@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from io import UnsupportedOperation
 from typing import Any, NamedTuple, Optional, TypeVar, Union, cast
 from enum import Enum
+from io import UnsupportedOperation
 # from collections import namedtuple
 
 from pathlib import Path
