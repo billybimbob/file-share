@@ -3,12 +3,11 @@
 from __future__ import annotations
 from collections.abc import Sequence
 from typing import Union
-from connection import CHUNK_SIZE
+from connection import CHUNK_SIZE, version_check
 
 from argparse import ArgumentParser
 from pathlib import Path
 
-import sys
 import os
 import shutil
 
@@ -26,29 +25,7 @@ LOGS = 'logs'
 
 # endregion
 
-PEER_PORT = 8889
-
-
-async def start_indexer(log: str) -> proc.Process:
-    """
-    Launches the server on a separate process with the specified log and directory
-    """
-    # clear log content
-    if (Path(f'./{log}').exists()):
-        open(log, 'w').close()
-
-    server = await aio.create_subprocess_exec(
-        *shlex.split(f"./indexer.py -c {CONFIGS}/eval-server.ini -l {log}"),
-        stdin=proc.PIPE
-    )
-
-    return server
-
-
-async def stop_indexer(indexer: proc.Process):
-    """ Sends input to all the server that should make it cleanly exit """
-    await indexer.communicate('\n'.encode())
-
+PEER_PORT_BASE = 8889
 
 
 class PeerRun:
@@ -93,7 +70,7 @@ async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRu
 
     peer = await aio.create_subprocess_exec(
         *shlex.split(
-            f"./peer.py -c {CONFIGS}/eval-peer.ini "
+            f"./peer.py -c {CONFIGS}/eval-peer.ini -p {PEER_PORT_BASE+id}"
             f"-d {peer_dir} -u {user} -l {log} -v {verbosity}"
         ),
         stdin=proc.PIPE,
@@ -149,7 +126,6 @@ async def get_response(peer: proc.Process):
 
 async def run_downloads(peers: Sequence[PeerRun], request: int):
     """ Passes input to the client processes to request downloads from the server """
-    # TODO: modify to use peers and to not use communicate
     # does not account for the case where the are no files to download, should not happen
     file_requests = "2\n1\n" * request
     client_input = f'{file_requests}'.encode()
@@ -180,17 +156,40 @@ async def stop_peers(peers: Sequence[PeerRun]):
 
 
 
+async def start_indexer(log: str) -> proc.Process:
+    """
+    Launches the server on a separate process with the specified log and directory
+    """
+    # clear log content
+    if (Path(f'./{log}').exists()):
+        open(log, 'w').close()
+
+    server = await aio.create_subprocess_exec(
+        *shlex.split(f"./indexer.py -c {CONFIGS}/eval-server.ini -l {log}"),
+        stdin=proc.PIPE
+    )
+
+    return server
+
+
+async def stop_indexer(indexer: proc.Process):
+    """ Sends input to all the server that should make it cleanly exit """
+    await indexer.communicate('\n'.encode())
+
+
+
 async def run_cycle(num_peers: int, file_size: str, repeat: int, verbosity: int):
     """ Manages the creation, running, and killing of server and client procs """
 
     label = f'{num_peers}c{file_size}f'
     indexer_log = f'{LOGS}/indexer-{label}.log'
-    indexer = await start_indexer(indexer_log)
 
+    indexer = await start_indexer(indexer_log)
     peers = await create_peers(num_peers, file_size, verbosity)
+
     await run_downloads(peers, repeat)
+
     await stop_peers(peers)
-    
     await stop_indexer(indexer)
 
     print('finished cycles')
@@ -198,8 +197,7 @@ async def run_cycle(num_peers: int, file_size: str, repeat: int, verbosity: int)
 
 
 if __name__ == "__main__":
-    if sys.version_info < (3, 8):
-        raise RuntimeError("Python version needs to be at least 3.8")
+    version_check()
 
     args = ArgumentParser("Runs various configurations for server client set ups")
     args.add_argument("-f", "--file_size", choices=['128', '512', '2k', '8k', '32k'], default='128', help="the size of each file downloaded")

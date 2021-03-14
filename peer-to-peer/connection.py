@@ -19,9 +19,9 @@ import asyncio
 # Max amount read for files
 CHUNK_SIZE = 1024
 
-#region request constants
 
 class Request(Enum):
+    """ Request messages """
     GET_FILES = 'get_files_list'
     DOWNLOAD = 'download'
     SUCCESS = 'success'
@@ -39,9 +39,6 @@ class Request(Enum):
             pass
 
         return request
-
-
-#endregion
 
 
 #region message passing

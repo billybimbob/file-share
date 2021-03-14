@@ -46,16 +46,15 @@ class Indexer:
         """
         self.port = max(1, port)
         self.peers = {}
-        self.updates = aio.Queue()
 
 
-    def get_files(self) -> list[str]:
-        """ Gets all the unique files accross all peers in ascending order """
-        return sorted({
+    def get_files(self) -> frozenset[str]:
+        """ Gets all the unique files accross all peers """
+        return frozenset(
             file
             for info in self.peers.values()
             for file in info.files
-        })
+        )
 
 
     def get_location(self, filename: str) -> tuple[StreamPair]:
@@ -75,6 +74,9 @@ class Indexer:
         Intilizes the indexer server and workers; awaiting on 
         this method will wait until the server is closed
         """
+        # async sync state needs to be init from async context
+        self.updates = aio.Queue()
+
         def to_connection(reader: aio.StreamReader, writer: aio.StreamWriter):
             """ Indexer closure as a stream callback """
             return self._peer_connected(StreamPair(reader, writer))
@@ -126,6 +128,7 @@ class Indexer:
         pair_state.files.clear()
         pair_state.files.update(files)
 
+        self.peers[pair].log.debug("got updated files")
         self.updates.task_done()
         pair_state.signal.set()
 
@@ -175,13 +178,17 @@ class Indexer:
 
                 await self._connect_loop(pair)
 
+        except aio.IncompleteReadError:
+            # transport should be close if read fail
+            pass
+
         except Exception as e:
             logger.error(e)
             await Message.write(writer, e)
+            writer.write_eof()
 
         finally:
             logger.debug('ending connection')
-            writer.write_eof()
             writer.close()
 
             if pair in self.peers:
@@ -218,6 +225,7 @@ class Indexer:
 
     async def _receive_update(self, pair: StreamPair):
         """ Notify update handler of a update task, and wait for completion """
+        self.peers[pair].log.debug("updating file info")
         signal = self.peers[pair].signal
         signal.clear()
         await self.updates.put(pair)

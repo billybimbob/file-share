@@ -41,8 +41,8 @@ class Peer:
     port: int
     user: str
     direct: Path
-    dir_update: aio.Event
     index_start: IndexInfo
+    dir_update: aio.Event
 
     PROMPT = (
         "1. List all available files in system\n"
@@ -75,7 +75,6 @@ class Peer:
             self.direct = directory
 
         self.direct.mkdir(exist_ok=True, parents=True)
-        self.dir_update = aio.Event()
 
         if address is None:
             in_host = socket.gethostname()
@@ -99,6 +98,9 @@ class Peer:
         """
         Connects the peer to the indexing node, and starts the peer server
         """
+        # async sync state needs to be init from async context
+        self.dir_update = aio.Event()
+        
         def to_upload(reader: aio.StreamReader, writer: aio.StreamWriter):
             """ Indexeder closure as a stream callback """
             return self._peer_upload(StreamPair(reader, writer))
@@ -106,6 +108,7 @@ class Peer:
         try:
             host = socket.gethostname()
             server = await aio.start_server(to_upload, host, self.port)
+            logging.info(f'peer server on {host}, port {self.port}')
 
             async with server:
                 if server.sockets:
@@ -145,6 +148,8 @@ class Peer:
 
         except Exception as e:
             logging.error(e)
+
+        logging.debug("ending peer")
 
 
 
@@ -189,7 +194,8 @@ class Peer:
         """ Coroutine that completes when the indexer connection is closed """
         try:
             check = aio.Condition()
-            await check.wait_for(indexer.pair.reader.at_eof)
+            async with check:
+                await check.wait_for(indexer.pair.reader.at_eof)
 
         except aio.CancelledError:
             # indexer won't be reading, so don't have to eof
@@ -214,16 +220,16 @@ class Peer:
                         print(f'Exiting {self.user} peer server')
                         break
 
-        except aio.CancelledError:
+        except (aio.CancelledError, aio.IncompleteReadError):
             pass
 
 
     async def _system_files(self, indexer: IndexState) -> list[str]:
         """ Fetches all the files in the system based on indexer """
         await Message.write(indexer.pair.writer, Request.GET_FILES)
-        files: list[str] = await Message.read(indexer.pair.reader, list)
+        files: frozenset[str] = await Message.read(indexer.pair.reader, frozenset)
 
-        return files
+        return sorted(files)
 
     
     async def _list_system(self, indexer: IndexState):
@@ -241,6 +247,7 @@ class Peer:
         files = set(files) - self.get_files()
 
         if len(files) == 0:
+            print('There are no files that can be downloaded')
             logging.error("no files can be downloaded")
             return
 
@@ -302,7 +309,6 @@ class Peer:
             logging.error(e)
 
         finally:
-            writer.write_eof()
             writer.close()
             await writer.wait_closed()
 
@@ -339,6 +345,7 @@ class Peer:
 
         await Message.write(writer, elapsed)
         logging.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
+
 
 
     async def _receive_file(self, filepath: Path, reader: aio.StreamReader) -> tuple[bool, int]:
@@ -399,9 +406,9 @@ class Peer:
         except Exception as e:
             logging.error(e)
             await Message.write(writer, e)
+            writer.write_eof()
 
         finally:
-            writer.write_eof()
             writer.close()
             await writer.wait_closed()
 
@@ -482,9 +489,9 @@ if __name__ == "__main__":
     args.add_argument("-a", "--address", default=None, help="ip address of the indexing server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--directory", default='', help="the client download folder")
-    args.add_argument("-i", "--in_port", help="the port of the indxing server")
-    args.add_argument("-l", "--log", default='client.log', help="the file to write log info to")
-    args.add_argument("-p", "--port", type=int, default=8888, help="the port to listen for connections")
+    args.add_argument("-i", "--in_port", type=int, default=8888, help="the port of the indexing server")
+    args.add_argument("-l", "--log", default='peer.log', help="the file to write log info to")
+    args.add_argument("-p", "--port", type=int, default=8889, help="the port to listen for connections")
     args.add_argument("-u", "--user", help="username of the client connecting")
     args.add_argument("-v", "--verbosity", type=int, default=10, choices=[0, 10, 20, 30, 40, 50], help="the logging verboseness, level corresponds to default levels")
 
