@@ -100,7 +100,7 @@ class Indexer:
             await server.wait_closed()
 
         except Exception as e:
-            logging.error(e)
+            logging.exception(e)
 
         logging.info("index server stopped")
 
@@ -189,7 +189,7 @@ class Indexer:
             pass
 
         except Exception as e:
-            logger.error(e)
+            logger.exception(e)
             await Message.write(writer, e)
 
         finally:
@@ -265,10 +265,14 @@ def init_log(log: str, **_):
     """ Specifies logging format and location """
     log_path = Path(f'./{log}')
     log_path.parent.mkdir(exist_ok=True, parents=True)
-    log_settings = {'format': "%(levelname)s: %(name)s: %(message)s", 'level': logging.DEBUG}
+    log_settings = {
+        'format': "%(asctime)s.%(msecs)03d:%(levelname)s:%(name)s: %(message)s",
+        'datefmt': "%H:%M:%S",
+        'level': logging.DEBUG
+    }
 
     if not log_path.exists() or log_path.is_file():
-        logging.basicConfig(filename=log, **log_settings)
+        logging.basicConfig(filename=log, filemode='w', **log_settings)
     else: # just use stdout
         logging.basicConfig(**log_settings)
 

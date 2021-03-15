@@ -54,6 +54,7 @@ async def create_peers(num_peers: int, file_size: str, verbosity: int) -> Sequen
         for i in range(num_peers)
     ])
 
+    print(f'got {len(peers)} peers')
     return peers
 
 
@@ -80,7 +81,8 @@ async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRu
 
     if peer.stdin:
         peer.stdin.write('1\n'.encode())
-        await aio.wait_for(peer.stdin.drain(), 5)
+        _, pend = await aio.wait({peer.stdin.drain()}, timeout=5)
+        for p in pend: p.cancel()
         await get_response(peer)
 
     return PeerRun(peer, peer_dir)
@@ -88,10 +90,10 @@ async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRu
 
 def init_peer_paths(user: str, log: str, peer_dir: str, src_dir: str):
     """ Clear old log info and sets up peer directory """
-    if ((logpath := Path(log)).exists()):
-        open(log, 'w').close()
-    else:
+    if not ((logpath := Path(log)).exists()):
         logpath.parent.mkdir(exist_ok=True, parents=True)
+    # else:
+    #     open(log, 'w').close()
 
     # if not (peer_path := Path(peer_dir)).exists():
     peer_path = Path(peer_dir)
@@ -117,17 +119,24 @@ async def get_response(peer: proc.Process):
         print('cannot get response from peer')
         return
 
+    print(f'getting response from {peer.pid}')
+
     try:
-        read = 0
-        while read == 0 or read == CHUNK_SIZE:
+        while True:
             # might want to make wait interval as param
-            read = await aio.wait_for(peer.stdout.read(CHUNK_SIZE), 5)
-            read = len(read)
+            _, pend = await aio.wait({peer.stdout.read(CHUNK_SIZE)}, timeout=5)
+
+            for p in pend: p.cancel()
+            if len(pend) > 0: break
 
     except aio.TimeoutError:
         pass
 
+    print(f'response done for {peer.pid}')
 
+
+
+from datetime import datetime
 
 async def run_downloads(peers: Sequence[PeerRun], request: int):
     """ Passes input to the client processes to request downloads from the server """
@@ -141,10 +150,13 @@ async def run_downloads(peers: Sequence[PeerRun], request: int):
             return
 
         peer.process.stdin.write(client_input)
-        await peer.process.stdin.drain()
+        _, pend = await aio.wait({peer.process.stdin.drain()}, timeout=5)
+        for p in pend: p.cancel()
+
         await get_response(peer.process)
 
     await aio.gather(*[ request_peer(p) for p in peers ])
+    print(f'{datetime.now().time()}: finished downloads')
 
 
 

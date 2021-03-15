@@ -116,7 +116,12 @@ class Peer:
                     start = self.index_start
 
                     logging.info(f'trying connection with indexer at {start}')
-                    in_pair = await aio.wait_for(aio.open_connection(start.host, start.port), 8)
+
+                    fin, pend = await aio.wait({aio.open_connection(start.host, start.port)}, timeout=8)
+                    for p in pend: p.cancel()
+                    if len(fin) == 0: return
+
+                    in_pair = fin.pop().result()
                     in_pair = StreamPair(*in_pair)
 
                     indexer = IndexState(start, in_pair)
@@ -151,7 +156,7 @@ class Peer:
             await server.wait_closed()
 
         except Exception as e:
-            logging.error(e)
+            logging.exception(e)
 
         logging.debug("disconnected from indexing server")
         logging.debug("ending peer")
@@ -217,6 +222,7 @@ class Peer:
         """ Cli for peer """
         try:
             while request := await ainput(Peer.PROMPT):
+                logging.info(f'request is {request!r}')
                 async with indexer.access:
                     if request == '1':
                         await self._list_system(indexer)
@@ -228,11 +234,13 @@ class Peer:
                         print(f'Exiting {self.user} peer server')
                         break
 
-        except (aio.CancelledError, aio.IncompleteReadError):
+            logging.info(f'request is {request!r}')
+
+        except aio.CancelledError:
             pass
 
         except Exception as e:
-            logging.error(e)
+            logging.exception(e)
 
         logging.info(f"{self.user} session ending")
 
@@ -260,7 +268,7 @@ class Peer:
         files = set(files) - self.get_files()
         if len(files) == 0:
             print('There are no files that can be downloaded')
-            logging.error("no files can be downloaded")
+            logging.exception("no files can be downloaded")
             return
 
         picked = self._select_file(files)
@@ -274,7 +282,7 @@ class Peer:
         logging.info(f"query for {picked} took {elapsed:.4f} secs")
 
         if len(peers) == 0:
-            logging.error(f"location for {picked} could not be found")
+            logging.exception(f"location for {picked} could not be found")
             return
         
         # use a random peer target
@@ -308,29 +316,34 @@ class Peer:
         """ Client-side connection with any of the other peers """
         logging.debug(f"attempting connection to {target}")
 
-        pair = await aio.wait_for(aio.open_connection(*target), 10)
-        pair = StreamPair(*pair)
-        reader, writer = pair
+        fin, pend = await aio.wait({aio.open_connection(*target)}, timeout=8)
+        for p in pend: p.cancel()
 
-        log = logging.getLogger()
+        if len(fin) > 0:
+            pair = fin.pop().result() # will only be one result
+            pair = StreamPair(*pair)
+            reader, writer = pair
 
-        try:
-            await Message.write(writer, self.user)
-            user = await Message.read(reader, str)
+            log = logging.getLogger()
 
-            log = logging.getLogger(user)
-            log.debug("connected")
-            
-            await pair.request(Request.DOWNLOAD, filename=filename)
-            await self._receive_file_loop(filename, pair, log)
+            try:
+                await Message.write(writer, self.user)
+                user = await Message.read(reader, str)
 
-        except Exception as e:
-            logging.error(e)
+                log = logging.getLogger(user)
+                log.debug("connected")
+                
+                await pair.request(Request.DOWNLOAD, filename=filename)
+                await self._receive_file_loop(filename, pair, log)
 
-        finally:
-            writer.close()
-            await writer.wait_closed()
-            log.debug("disconnected")
+            except Exception as e:
+                logging.exception(e)
+
+            finally:
+                writer.close()
+                await writer.wait_closed()
+                log.debug("disconnected")
+
 
 
     async def _receive_file_loop(self, filename: str, peer: StreamPair, log: logging.Logger):
@@ -420,7 +433,7 @@ class Peer:
             await self._send_file_loop(peer, log=log, **args)
 
         except Exception as e:
-            log.error(e)
+            log.exception(e)
             await Message.write(writer, e)
 
         finally:
@@ -486,14 +499,14 @@ def init_log(log: str, verbosity: int, **_):
     """ Specifies logging format and location """
     log_path = Path(f'./{log}')
     log_path.parent.mkdir(exist_ok=True, parents=True)
-
     log_settings = {
-        'format': "%(levelname)s: %(name)s: %(message)s",
+        'format': "%(asctime)s.%(msecs)03d:%(levelname)s:%(name)s: %(message)s",
+        'datefmt': "%H:%M:%S",
         'level': logging.getLevelName(verbosity)
     }
 
     if not log_path.exists() or log_path.is_file():
-        logging.basicConfig(filename=log, **log_settings)
+        logging.basicConfig(filename=log, filemode='w', **log_settings)
     else: # just use stdout
         logging.basicConfig(**log_settings)
 
