@@ -141,6 +141,7 @@ async def run_downloads(peers: Sequence[PeerRun], request: int):
     await aio.gather(*[ request_peer(p) for p in peers ])
 
 
+
 async def stop_peers(peers: Sequence[PeerRun]):
     """ Sends input to all the clients that should make them cleanly exit """
     await aio.gather(*[
@@ -203,7 +204,7 @@ async def run_cycle(num_peers: int, file_size: str, repeat: int, verbosity: int)
 if __name__ == "__main__":
     version_check()
 
-    args = ArgumentParser("P2P Evaluator")
+    args = ArgumentParser(description="Runs various configurations for peer clients")
     args.add_argument("-f", "--file_size", choices=['128', '512', '2k', '8k', '32k'], default='128', help="the size of each file downloaded")
     args.add_argument("-n", "--num_peers", type=int, default=4, help="the number of concurrent clients")
     args.add_argument("-r", "--repeat", type=int, default=2, help="the amount of repeated runs")

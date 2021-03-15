@@ -20,6 +20,7 @@ from connection import (
 @dataclass(frozen=True)
 class PeerState:
     """ Peer connection state """
+    loc: tuple[str,int]
     files: set[str] = field(default_factory=set)
     signal: aio.Event = field(default_factory=aio.Event)
     log: logging.Logger = field(default_factory=logging.getLogger)
@@ -140,9 +141,12 @@ class Indexer:
         while option := await ainput(Indexer.PROMPT):
             if option == '1':
                 peer_users = '\n'.join(
-                    info.log.name
-                    for pair, info in self.peers.items()
-                    if not pair.writer.is_closing()
+                    str(peer)
+                    for peer in (
+                        getpeerbystream(pair)
+                        for pair in self.peers.keys()
+                        if not pair.writer.is_closing())
+                    if peer is not None
                 )
                 print('The peers connected are: ')
                 print(f'{peer_users}\n')
@@ -160,26 +164,28 @@ class Indexer:
 
     #region peer connection
 
-    async def _peer_connected(self, pair: StreamPair):
+    async def _peer_connected(self, peer: StreamPair):
         """ A connection with a specific peer """
-        reader, writer = pair
+        reader, writer = peer
         logger = logging.getLogger()
 
         try:
             username = await Message.read(reader, str)
+            host = await Message.read(reader, str)
+            port = await Message.read(reader, int)
+
+            loc = (host, port)
             logger = logging.getLogger(username)
 
-            self.peers[pair] = PeerState(log=default_logger(logger))
+            self.peers[peer] = PeerState(loc, log=default_logger(logger))
 
-            info = getpeerbystream(writer)
-            if info:
-                remote = socket.gethostbyaddr(info[0])
+            remote = getpeerbystream(writer)
+            if remote:
                 logger.debug(f"connected to {username}: {remote}")
 
-                await self._connect_loop(pair)
+                await self._connect_loop(peer)
 
         except aio.IncompleteReadError:
-            # transport should be closed if read fail
             pass
 
         except Exception as e:
@@ -188,71 +194,69 @@ class Indexer:
 
         finally:
             if not reader.at_eof():
-                print('writing eof')
                 writer.write_eof()
 
             logger.debug('ending connection')
             writer.close()
 
-            if pair in self.peers:
-                del self.peers[pair]
+            if peer in self.peers:
+                del self.peers[peer]
 
             await writer.wait_closed()
 
 
-    async def _connect_loop(self, pair: StreamPair):
+
+    async def _connect_loop(self, peer: StreamPair):
         """ Request loop handler for each peer connection """
 
-        while request := await Message.read(pair.reader, Request):
+        while request := await Message.read(peer.reader, Request):
             if request == Request.GET_FILES:
-                await self._send_files(pair)
+                await self._send_files(peer)
 
             elif request == Request.UPDATE:
-                await self._receive_update(pair)
+                await self._receive_update(peer)
 
             elif request == Request.QUERY:
-                await self._query_file(pair)
+                await self._query_file(peer)
 
             else:
                 break
 
+
     
-    async def _send_files(self, pair: StreamPair):
+    async def _send_files(self, peer: StreamPair):
         """
         Handles the get files request, and sends files to given socket
         """
-        self.peers[pair].log.debug("getting all files in cluster")
+        self.peers[peer].log.debug("getting all files in cluster")
         await self.updates.join() # wait for no more file updates
-        await Message.write(pair.writer, self.get_files())
+        await Message.write(peer.writer, self.get_files())
 
 
-    async def _receive_update(self, pair: StreamPair):
+
+    async def _receive_update(self, peer: StreamPair):
         """ Notify update handler of a update task, and wait for completion """
-        self.peers[pair].log.debug("updating file info")
-        signal = self.peers[pair].signal
+        self.peers[peer].log.debug("updating file info")
+        signal = self.peers[peer].signal
         signal.clear()
-        await self.updates.put(pair)
+        await self.updates.put(peer)
         await signal.wait() # block stream access til finished
 
 
-    async def _query_file(self, pair: StreamPair):
+
+    async def _query_file(self, peer: StreamPair):
         """ Reply to stream with the peers that have specfied file """
-        filename = await Message.read(pair.reader, str)
-        self.peers[pair].log.debug(f'querying for file {filename}')
+        filename = await Message.read(peer.reader, str)
+        self.peers[peer].log.debug(f'querying for file {filename}')
 
         await self.updates.join() # wait for no more file updates
 
-        peers = (
-            getpeerbystream(pair) 
-            for pair in self.get_location(filename)
-        )
-        assoc_peers: set[tuple[str, int]] = {
-            peer
-            for peer in peers
-            if peer is not None
+        assoc_peers = {
+            self.peers[file_peer].loc
+            for file_peer in self.get_location(filename)
         }
 
-        await Message.write(pair.writer, assoc_peers)
+        await Message.write(peer.writer, assoc_peers)
 
     #endregion
 

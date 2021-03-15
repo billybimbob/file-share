@@ -120,7 +120,7 @@ if __name__ == "__main__":
     if sys.version_info < (3, 8):
         raise RuntimeError("Python version needs to be at least 3.8")
 
-    args = ArgumentParser("Runs various configurations for server client set ups")
+    args = ArgumentParser(description="Runs various configurations for server client set ups")
     args.add_argument("-f", "--file_size", choices=['128', '512', '2k', '8k', '32k'], default='128', help="the size of each file downloaded")
     args.add_argument("-n", "--num_clients", type=int, default=4, help="the number of concurrent clients")
     args.add_argument("-r", "--repeat", type=int, default=2, help="the amount of repeated runs")

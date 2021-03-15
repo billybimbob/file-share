@@ -114,16 +114,16 @@ class Peer:
 
             async with server:
                 if server.sockets:
-                    addr = server.sockets[0].getsockname()[0]
-                    logging.info(f'indexing server on {addr}')
-
                     start = self.index_start
                     in_pair = await aio.open_connection(start.host, start.port)
                     in_pair = StreamPair(*in_pair)
 
                     indexer = IndexState(start, in_pair)
 
+                    # don't send tuple because of type erasure
                     await Message.write(in_pair.writer, self.user)
+                    await Message.write(in_pair.writer, host)
+                    await Message.write(in_pair.writer, self.port)
 
                     # make sure that event is listening before it can be set and cleared
                     first_update = aio.create_task(self.dir_update.wait())
@@ -199,7 +199,7 @@ class Peer:
             while not indexer.pair.reader.at_eof():
                 await aio.sleep(8) # TODO: make interval param
 
-            print('\nConnection to indexer was closed')
+            print('\nConnection to indexer was closed, press enter to continue')
 
         except aio.CancelledError:
             # indexer won't be reading, so don't have to eof

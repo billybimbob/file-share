@@ -133,7 +133,7 @@ async def ainput(prompt: str='') -> str:
         .get_event_loop()
         .run_in_executor(None, input, prompt))
 
-    return response.rstrip()
+    return response
 
 
 # def shallow_obj(map: Dict[str, Any]) -> object:
