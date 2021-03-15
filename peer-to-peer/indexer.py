@@ -83,7 +83,7 @@ class Indexer:
 
         try:
             host = socket.gethostname()
-            server = await aio.start_server(to_connection, host, self.port)
+            server = await aio.start_server(to_connection, host, self.port, start_serving=False)
 
             async with server:
                 if server.sockets:
@@ -91,9 +91,10 @@ class Indexer:
                     logging.info(f'indexing server on {addr}')
 
                     updates = aio.create_task(self._update_loop())
-                    aio.create_task(server.serve_forever())
 
+                    await server.start_serving()
                     await aio.create_task(self._session())  
+
                     updates.cancel()
 
             await server.wait_closed()

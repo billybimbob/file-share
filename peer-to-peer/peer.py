@@ -15,7 +15,7 @@ import logging
 
 from connection import (
     CHUNK_SIZE, Message, Procedure, Request, StreamPair,
-    ainput, getpeerbystream, merge_config_args, version_check
+    ainput, merge_config_args, version_check
 )
 
 
@@ -108,14 +108,15 @@ class Peer:
 
         try:
             host = socket.gethostname()
-            server = await aio.start_server(to_upload, host, self.port)
+            server = await aio.start_server(to_upload, host, self.port, start_serving=False)
             logging.info(f'peer server on {host}, port {self.port}')
 
             async with server:
                 if server.sockets:
                     start = self.index_start
+
                     logging.info(f'trying connection with indexer at {start}')
-                    in_pair = await aio.open_connection(start.host, start.port)
+                    in_pair = await aio.wait_for(aio.open_connection(start.host, start.port), 8)
                     in_pair = StreamPair(*in_pair)
 
                     indexer = IndexState(start, in_pair)
@@ -134,17 +135,18 @@ class Peer:
                     # only accept connections and user input after a dir_update
                     # should not deadlock, keep eye on
                     await first_update
-
-                    aio.create_task(server.serve_forever())
+                    await server.start_serving()
 
                     session = aio.create_task(self._session(indexer))
                     conn = aio.create_task(self._watch_connection(indexer))
 
-                    _, pend = await aio.wait([session, conn], return_when=aio.FIRST_COMPLETED)
+                    await aio.wait([session, conn], return_when=aio.FIRST_COMPLETED)
 
                     checker.cancel()
                     sender.cancel()
-                    for p in pend: p.cancel()
+
+                    if not session.done(): session.cancel()
+                    if not conn.done(): conn.cancel()
 
             await server.wait_closed()
 
@@ -183,10 +185,8 @@ class Peer:
             while True:
                 await self.dir_update.wait()
                 async with indexer.access:
-                    # await Message.write(writer, Request.UPDATE)
-                    # await Message.write(writer, self.get_files())
-                    # should be only place where dir_update is cleared
                     await indexer.pair.request(Request.UPDATE, files=self.get_files())
+                    # should be only place where dir_update is cleared
                     self.dir_update.clear()
 
         except aio.CancelledError:
@@ -195,16 +195,20 @@ class Peer:
 
     async def _watch_connection(self, indexer: IndexState):
         """ Coroutine that completes when the indexer connection is closed """
+        reader, writer = indexer.pair
         try:
-            while not indexer.pair.reader.at_eof():
+            while not reader.at_eof():
                 await aio.sleep(8) # TODO: make interval param
 
+            logging.info("Indexer connection has ended")
             print('\nConnection to indexer was closed, press enter to continue')
 
         except aio.CancelledError:
-            # indexer won't be reading, so don't have to eof
-            indexer.pair.writer.close()
-            await indexer.pair.writer.wait_closed()
+            pass
+
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
 
     #region session methods
@@ -227,11 +231,14 @@ class Peer:
         except (aio.CancelledError, aio.IncompleteReadError):
             pass
 
+        except Exception as e:
+            logging.error(e)
+
+        logging.info(f"{self.user} session ending")
+
 
     async def _system_files(self, indexer: IndexState) -> list[str]:
         """ Fetches all the files in the system based on indexer """
-        # await Message.write(indexer.pair.writer, Request.GET_FILES)
-        # files: frozenset[str] = await Message.read(indexer.pair.reader, frozenset)
         files: frozenset[str] = await indexer.pair.request(Request.GET_FILES, as_type=frozenset)
         return sorted(files)
 
@@ -259,10 +266,6 @@ class Peer:
         picked = self._select_file(files)
 
         # query for loc
-        # await Message.write(writer, Request.QUERY)
-        # await Message.write(writer, picked)
-        # peers: set[tuple[str, int]] = await Message.read(reader, set)
-
         start_time = time()
         peers: set[tuple[str,int]] = await indexer.pair.request(Request.QUERY, filename=picked, as_type=set)
         query_elapsed = time() - start_time
@@ -305,19 +308,18 @@ class Peer:
         """ Client-side connection with any of the other peers """
         logging.debug(f"attempting connection to {target}")
 
-        pair = await aio.open_connection(*target)
+        pair = await aio.wait_for(aio.open_connection(*target), 10)
         pair = StreamPair(*pair)
-        writer = pair.writer
+        reader, writer = pair
 
         log = logging.getLogger()
 
         try:
-            info = getpeerbystream(writer)
-            if not info: return
+            await Message.write(writer, self.user)
+            user = await Message.read(reader, str)
 
-            remote = socket.gethostbyaddr(info[0])
-            log = logging.getLogger(remote[0])
-            log.debug(f"connected")
+            log = logging.getLogger(user)
+            log.debug("connected")
             
             await pair.request(Request.DOWNLOAD, filename=filename)
             await self._receive_file_loop(filename, pair, log)
@@ -328,6 +330,7 @@ class Peer:
         finally:
             writer.close()
             await writer.wait_closed()
+            log.debug("disconnected")
 
 
     async def _receive_file_loop(self, filename: str, peer: StreamPair, log: logging.Logger):
@@ -361,7 +364,7 @@ class Peer:
         log.info(f"successfully got file")
 
         elapsed = time() - start_time
-        log.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
+        log.debug(f'received {filename} was {elapsed:.4f} secs')
         log.info(f'read {(tot_read / 1000):.2f} KB')
 
 
@@ -402,11 +405,10 @@ class Peer:
         log = logging.getLogger()
 
         try:
-            info = getpeerbystream(writer)
-            if not info: return
+            user = await Message.read(reader, str)
+            await Message.write(writer, self.user)
 
-            remote = socket.gethostbyaddr(info[0])
-            log = logging.getLogger(remote[0])
+            log = logging.getLogger(user)
             log.debug(f"connected")
 
             # just do one transaction, and close stream
@@ -436,9 +438,7 @@ class Peer:
         Runs multiple attempts to send a file based on the receiver response
         """
         start_time = time()
-        log.info("waiting for selected file")
         reader, writer = peer
-
         filepath = self.direct.joinpath(filename)
 
         tot_bytes = 0
@@ -454,7 +454,7 @@ class Peer:
 
         elapsed = time() - start_time
         log.debug(
-            f'transfer of {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs'
+            f'sent {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs'
         )
 
 

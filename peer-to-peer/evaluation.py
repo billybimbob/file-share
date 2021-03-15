@@ -8,7 +8,7 @@ from connection import CHUNK_SIZE, version_check
 from argparse import ArgumentParser
 from pathlib import Path
 
-# import os
+import os
 import shutil
 
 import asyncio as aio
@@ -35,12 +35,12 @@ class PeerRun:
     """
     process: proc.Process
     dir: Path
-    # start_files: frozenset[Path]
+    start_files: frozenset[Path]
 
     def __init__(self, process: proc.Process, dir: Union[str, Path]):
         self.process = process
         self.dir = dir if isinstance(dir, Path) else Path(dir)
-        # self.start_files = frozenset(self.dir.iterdir())
+        self.start_files = frozenset(self.dir.iterdir())
 
 
 
@@ -63,8 +63,8 @@ async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRu
     indicate that the peer is ready to take in user input
     """
     user = f'peer{id}'
-    log = f'{LOGS}/peers/{user}-{label}.log'
-    peer_dir = f'{PEERS}/{id}'
+    log = f'{LOGS}/{label}/peers/{user}.log'
+    peer_dir = f'{PEERS}/{Path(src_dir).name}/{id}'
 
     init_peer_paths(user, log, peer_dir, src_dir)
 
@@ -77,12 +77,17 @@ async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRu
         stdout=proc.PIPE
     )
 
-    await get_response(peer)
+
+    if peer.stdin:
+        peer.stdin.write('1\n'.encode())
+        await aio.wait_for(peer.stdin.drain(), 5)
+        await get_response(peer)
 
     return PeerRun(peer, peer_dir)
 
 
 def init_peer_paths(user: str, log: str, peer_dir: str, src_dir: str):
+    """ Clear old log info and sets up peer directory """
     if ((logpath := Path(log)).exists()):
         open(log, 'w').close()
     else:
@@ -90,31 +95,27 @@ def init_peer_paths(user: str, log: str, peer_dir: str, src_dir: str):
 
     # if not (peer_path := Path(peer_dir)).exists():
     peer_path = Path(peer_dir)
-    if peer_path.exists():
-        shutil.rmtree(peer_path)
+    if not peer_path.exists():
+        peer_path.mkdir(parents=True)
+        shutil.copytree(src_dir, peer_dir, dirs_exist_ok=True)
 
-    peer_path.mkdir(parents=True)
-    shutil.copytree(src_dir, peer_dir, dirs_exist_ok=True)
+        old_names = list(peer_path.iterdir())
+        new_names = [
+            old.with_name(f'{old.stem}-{user}{"".join(old.suffixes)}')
+            for old in old_names
+        ]
 
-    old_names = list(peer_path.iterdir())
-    new_names = [
-        old.with_name(f'{old.stem}-{user}{"".join(old.suffixes)}')
-        for old in old_names
-    ]
-
-    # rename files
-    for old, new in zip(old_names, new_names):
-        shutil.move(str(old), str(new))
+        # rename files
+        for old, new in zip(old_names, new_names):
+            shutil.move(str(old), str(new))
 
 
 
 async def get_response(peer: proc.Process):
-    if not peer.stdin or not peer.stdout:
+    """ Tries to block until stdout has no more output """
+    if not peer.stdout:
         print('cannot get response from peer')
         return
-
-    peer.stdin.write('1\n'.encode())
-    await aio.wait_for(peer.stdin.drain(), 5)
 
     try:
         read = 0
@@ -141,6 +142,7 @@ async def run_downloads(peers: Sequence[PeerRun], request: int):
 
         peer.process.stdin.write(client_input)
         await peer.process.stdin.drain()
+        await get_response(peer.process)
 
     await aio.gather(*[ request_peer(p) for p in peers ])
 
@@ -154,15 +156,15 @@ async def stop_peers(peers: Sequence[PeerRun]):
 
     # remove downloaded files during run
     for p in peers:
-        shutil.rmtree(p.dir)
-        # new_files = set(p.dir.iterdir())
-        # new_files.difference_update(p.start_files)
-        # for new in new_files:
-        #     if new.is_dir:
-        #         shutil.rmtree(new)
-        #         new.rmdir()
-        #     else:
-        #         os.remove(new)
+        # shutil.rmtree(p.dir)
+        new_files = set(p.dir.iterdir())
+        new_files.difference_update(p.start_files)
+        for new in new_files:
+            if new.is_dir():
+                shutil.rmtree(new)
+                new.rmdir()
+            else:
+                os.remove(new)
 
 
 
@@ -176,7 +178,8 @@ async def start_indexer(log: str) -> proc.Process:
 
     server = await aio.create_subprocess_exec(
         *shlex.split(f"./indexer.py -c \"{CONFIGS}/eval-indexer.ini\" -l \"{log}\""),
-        stdin=proc.PIPE
+        stdin=proc.PIPE,
+        stdout=proc.PIPE
     )
 
     return server
@@ -191,7 +194,7 @@ async def stop_indexer(indexer: proc.Process):
 async def run_cycle(num_peers: int, file_size: str, repeat: int, verbosity: int):
     """ Manages the creation, running, and killing of server and client procs """
     label = f'{num_peers}c{file_size}f'
-    indexer_log = f'{LOGS}/indexer-{label}.log'
+    indexer_log = f'{LOGS}/{label}/indexer.log'
 
     indexer = await start_indexer(indexer_log)
     peers = await create_peers(num_peers, file_size, verbosity)
@@ -200,8 +203,6 @@ async def run_cycle(num_peers: int, file_size: str, repeat: int, verbosity: int)
 
     await stop_peers(peers)
     await stop_indexer(indexer)
-
-    print('finished cycles')
 
 
 
