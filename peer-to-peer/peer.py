@@ -114,6 +114,7 @@ class Peer:
             async with server:
                 if server.sockets:
                     start = self.index_start
+                    logging.info(f'trying connection with indexer at {start}')
                     in_pair = await aio.open_connection(start.host, start.port)
                     in_pair = StreamPair(*in_pair)
 
@@ -231,7 +232,7 @@ class Peer:
         """ Fetches all the files in the system based on indexer """
         # await Message.write(indexer.pair.writer, Request.GET_FILES)
         # files: frozenset[str] = await Message.read(indexer.pair.reader, frozenset)
-        files: frozenset[str] = await indexer.pair.request(Request.GET_FILES, frozenset)
+        files: frozenset[str] = await indexer.pair.request(Request.GET_FILES, as_type=frozenset)
         return sorted(files)
 
     
@@ -247,8 +248,9 @@ class Peer:
         """ Queries the indexer, prompts the user, then fetches file from peer """
         start_time = time()
         files = await self._system_files(indexer)
-        files = set(files) - self.get_files()
+        get_elapsed = time() - start_time
 
+        files = set(files) - self.get_files()
         if len(files) == 0:
             print('There are no files that can be downloaded')
             logging.error("no files can be downloaded")
@@ -261,9 +263,11 @@ class Peer:
         # await Message.write(writer, picked)
         # peers: set[tuple[str, int]] = await Message.read(reader, set)
 
-        peers: set[tuple[str,int]] = await indexer.pair.request(Request.QUERY, set, filename=picked)
-        elapsed = time() - start_time
+        start_time = time()
+        peers: set[tuple[str,int]] = await indexer.pair.request(Request.QUERY, filename=picked, as_type=set)
+        query_elapsed = time() - start_time
 
+        elapsed = (get_elapsed + query_elapsed) / 2
         logging.info(f"query for {picked} took {elapsed:.4f} secs")
 
         if len(peers) == 0:

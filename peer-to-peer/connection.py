@@ -22,9 +22,6 @@ CHUNK_SIZE = 1024
 
 #region message passing
 
-T = TypeVar('T')
-
-
 class Request(Enum):
     """ Request messages """
     GET_FILES = 'get_files_list'
@@ -44,6 +41,15 @@ class Request(Enum):
             pass
 
         return request
+
+
+class Procedure(NamedTuple):
+    """ Request message wrapped with keyword args """
+    request: Request
+    args: dict[str, Any]
+
+
+T = TypeVar('T')
 
 
 class Message:
@@ -104,12 +110,6 @@ class Message:
         return cast(as_type, message.unwrap())
 
 
-class Procedure(NamedTuple):
-    """ Request message wrapped with keyword args """
-    request: Request
-    args: dict[str, Any]
-
-
 class StreamPair(NamedTuple):
     """ Stream read-write pairing """
     reader: asyncio.StreamReader
@@ -117,12 +117,12 @@ class StreamPair(NamedTuple):
 
     async def request(
         self,
-        req_type: Request,
+        req_type: Request, *,
         as_type: Optional[type[T]] = None,
-        *_: Any, **kwargs: Any) -> T:
+        **kwargs: Any) -> T:
         """
-        Sends a request with keyword arguments, and gets response back if specified;
-        returns None if as_type is not defined
+        Sends a request with keyword arguments, and gets response back if as_type 
+        is specified; returns None if as_type is not defined
         """
         procedure = Procedure(req_type, kwargs)
         await Message.write(self.writer, procedure)

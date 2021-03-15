@@ -9,7 +9,6 @@ from pathlib import Path
 import asyncio as aio
 import socket
 import logging
-from typing import Any
 
 from connection import (
     Procedure, StreamPair, Message, Request,
@@ -261,7 +260,7 @@ class Indexer:
 
 
 
-def init_log(log: str, **kwargs: Any):
+def init_log(log: str, **_):
     """ Specifies logging format and location """
     log_path = Path(f'./{log}')
     log_path.parent.mkdir(exist_ok=True, parents=True)

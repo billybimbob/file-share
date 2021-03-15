@@ -8,7 +8,7 @@ from connection import CHUNK_SIZE, version_check
 from argparse import ArgumentParser
 from pathlib import Path
 
-import os
+# import os
 import shutil
 
 import asyncio as aio
@@ -35,12 +35,12 @@ class PeerRun:
     """
     process: proc.Process
     dir: Path
-    start_files: frozenset[Path]
+    # start_files: frozenset[Path]
 
     def __init__(self, process: proc.Process, dir: Union[str, Path]):
         self.process = process
         self.dir = dir if isinstance(dir, Path) else Path(dir)
-        self.start_files = frozenset(self.dir.iterdir())
+        # self.start_files = frozenset(self.dir.iterdir())
 
 
 
@@ -70,8 +70,8 @@ async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRu
 
     peer = await aio.create_subprocess_exec(
         *shlex.split(
-            f"./peer.py -c {CONFIGS}/eval-peer.ini -p {PEER_PORT_BASE+id}"
-            f"-d {peer_dir} -u {user} -l {log} -v {verbosity}"
+            f"./peer.py -c \"{CONFIGS}/eval-peer.ini\" -p {PEER_PORT_BASE + id} "
+            f"-d \"{peer_dir}\" -u \"{user}\" -l \"{log}\" -v {verbosity}"
         ),
         stdin=proc.PIPE,
         stdout=proc.PIPE
@@ -88,19 +88,23 @@ def init_peer_paths(user: str, log: str, peer_dir: str, src_dir: str):
     else:
         logpath.parent.mkdir(exist_ok=True, parents=True)
 
-    if not (peer_path := Path(peer_dir)).exists():
-        peer_path.mkdir(parents=True)
-        shutil.copytree(src_dir, peer_dir)
+    # if not (peer_path := Path(peer_dir)).exists():
+    peer_path = Path(peer_dir)
+    if peer_path.exists():
+        shutil.rmtree(peer_path)
 
-        old_names = list(peer_path.iterdir())
-        new_names = [
-            old.with_name(f'{old.name}-{user}')
-            for old in old_names
-        ]
+    peer_path.mkdir(parents=True)
+    shutil.copytree(src_dir, peer_dir, dirs_exist_ok=True)
 
-        # rename files
-        for old, new in zip(old_names, new_names):
-            shutil.move(str(old), str(new))
+    old_names = list(peer_path.iterdir())
+    new_names = [
+        old.with_name(f'{old.stem}-{user}{"".join(old.suffixes)}')
+        for old in old_names
+    ]
+
+    # rename files
+    for old, new in zip(old_names, new_names):
+        shutil.move(str(old), str(new))
 
 
 
@@ -110,7 +114,7 @@ async def get_response(peer: proc.Process):
         return
 
     peer.stdin.write('1\n'.encode())
-    await peer.stdin.drain()
+    await aio.wait_for(peer.stdin.drain(), 5)
 
     try:
         read = 0
@@ -150,14 +154,15 @@ async def stop_peers(peers: Sequence[PeerRun]):
 
     # remove downloaded files during run
     for p in peers:
-        new_files = set(p.dir.iterdir())
-        new_files.difference_update(p.start_files)
-        for new in new_files:
-            if new.is_dir:
-                shutil.rmtree(new)
-                new.rmdir()
-            else:
-                os.remove(new)
+        shutil.rmtree(p.dir)
+        # new_files = set(p.dir.iterdir())
+        # new_files.difference_update(p.start_files)
+        # for new in new_files:
+        #     if new.is_dir:
+        #         shutil.rmtree(new)
+        #         new.rmdir()
+        #     else:
+        #         os.remove(new)
 
 
 
@@ -170,7 +175,7 @@ async def start_indexer(log: str) -> proc.Process:
         open(log, 'w').close()
 
     server = await aio.create_subprocess_exec(
-        *shlex.split(f"./indexer.py -c {CONFIGS}/eval-server.ini -l {log}"),
+        *shlex.split(f"./indexer.py -c \"{CONFIGS}/eval-indexer.ini\" -l \"{log}\""),
         stdin=proc.PIPE
     )
 
@@ -185,7 +190,6 @@ async def stop_indexer(indexer: proc.Process):
 
 async def run_cycle(num_peers: int, file_size: str, repeat: int, verbosity: int):
     """ Manages the creation, running, and killing of server and client procs """
-
     label = f'{num_peers}c{file_size}f'
     indexer_log = f'{LOGS}/indexer-{label}.log'
 
@@ -205,8 +209,8 @@ if __name__ == "__main__":
     version_check()
 
     args = ArgumentParser(description="Runs various configurations for peer clients")
-    args.add_argument("-f", "--file_size", choices=['128', '512', '2k', '8k', '32k'], default='128', help="the size of each file downloaded")
-    args.add_argument("-n", "--num_peers", type=int, default=4, help="the number of concurrent clients")
+    args.add_argument("-f", "--file_size", default='128', choices=['128', '512', '2k', '8k', '32k'], help="the size of each file downloaded")
+    args.add_argument("-n", "--num_peers", type=int, default=2, help="the number of concurrent clients")
     args.add_argument("-r", "--repeat", type=int, default=2, help="the amount of repeated runs")
     args.add_argument("-v", "--verbosity", type=int, default=10, choices=[0, 10, 20, 30, 40, 50], help="the logging verboseness, level corresponds to default levels")
     args = args.parse_args()

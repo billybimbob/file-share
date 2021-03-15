@@ -2,7 +2,7 @@ __pycache__
 .vscode
 
 servers
-clients
+peers
 times
 
 out*
