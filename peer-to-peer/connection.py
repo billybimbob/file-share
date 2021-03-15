@@ -20,6 +20,11 @@ import asyncio
 CHUNK_SIZE = 1024
 
 
+#region message passing
+
+T = TypeVar('T')
+
+
 class Request(Enum):
     """ Request messages """
     GET_FILES = 'get_files_list'
@@ -41,15 +46,11 @@ class Request(Enum):
         return request
 
 
-#region message passing
-
 class Message:
     """ Information that is passed between socket streams """
     payload: Any # pre-pickled data
 
-    T = TypeVar('T')
     HEADER = struct.Struct("!I")
-
 
     def __init__(self, payload: Any):
         """
@@ -102,7 +103,11 @@ class Message:
         message = await Message.get(reader)
         return cast(as_type, message.unwrap())
 
-#endregion
+
+class Procedure(NamedTuple):
+    """ Request message wrapped with keyword args """
+    request: Request
+    args: dict[str, Any]
 
 
 class StreamPair(NamedTuple):
@@ -110,9 +115,27 @@ class StreamPair(NamedTuple):
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
 
+    async def request(
+        self,
+        req_type: Request,
+        as_type: Optional[type[T]] = None,
+        *_: Any, **kwargs: Any) -> T:
+        """
+        Sends a request with keyword arguments, and gets response back if specified;
+        returns None if as_type is not defined
+        """
+        procedure = Procedure(req_type, kwargs)
+        await Message.write(self.writer, procedure)
+        if as_type is not None:
+            return await Message.read(self.reader, as_type)
+        else:
+            return cast(Any, None) # kind of hacky
+
+#endregion
+
 
 def getpeerbystream(stream: Union[StreamPair, asyncio.StreamWriter]) -> Optional[tuple[str, int]]:
-    """ Addes type checks to get_extra_info method for Transport """
+    """ Adds type checks to get_extra_info method for Transport """
     if isinstance(stream, StreamPair):
         stream = stream.writer
 

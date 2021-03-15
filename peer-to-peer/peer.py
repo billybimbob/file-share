@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import Any, NamedTuple, Optional, Union
+from typing import NamedTuple, Optional, Union
 from dataclasses import dataclass, field
 
 from argparse import ArgumentParser
@@ -14,7 +14,7 @@ import hashlib
 import logging
 
 from connection import (
-    CHUNK_SIZE, Message, Request, StreamPair,
+    CHUNK_SIZE, Message, Procedure, Request, StreamPair,
     ainput, getpeerbystream, merge_config_args, version_check
 )
 
@@ -58,8 +58,7 @@ class Peer:
         address: Optional[str] = None, 
         in_port: Optional[int] = None,
         directory: Union[str, Path, None] = None,
-        *args: Any,
-        **kwargs: Any):
+        **_):
         """
         Creates all the state information for a peer node, use to method
         start_server to activate the peer node
@@ -104,7 +103,7 @@ class Peer:
         self.dir_update = aio.Event()
         
         def to_upload(reader: aio.StreamReader, writer: aio.StreamWriter):
-            """ Indexeder closure as a stream callback """
+            """ Indexer closure as a stream callback """
             return self._peer_upload(StreamPair(reader, writer))
 
         try:
@@ -179,14 +178,14 @@ class Peer:
         Sends updated directory to indexer, should be the only place where files attr 
         is updated in order to sync with indexer
         """
-        _, writer = indexer.pair
         try:
             while True:
                 await self.dir_update.wait()
                 async with indexer.access:
-                    await Message.write(writer, Request.UPDATE)
-                    await Message.write(writer, self.get_files())
+                    # await Message.write(writer, Request.UPDATE)
+                    # await Message.write(writer, self.get_files())
                     # should be only place where dir_update is cleared
+                    await indexer.pair.request(Request.UPDATE, files=self.get_files())
                     self.dir_update.clear()
 
         except aio.CancelledError:
@@ -230,9 +229,9 @@ class Peer:
 
     async def _system_files(self, indexer: IndexState) -> list[str]:
         """ Fetches all the files in the system based on indexer """
-        await Message.write(indexer.pair.writer, Request.GET_FILES)
-        files: frozenset[str] = await Message.read(indexer.pair.reader, frozenset)
-
+        # await Message.write(indexer.pair.writer, Request.GET_FILES)
+        # files: frozenset[str] = await Message.read(indexer.pair.reader, frozenset)
+        files: frozenset[str] = await indexer.pair.request(Request.GET_FILES, frozenset)
         return sorted(files)
 
     
@@ -247,8 +246,6 @@ class Peer:
     async def _run_download(self, indexer: IndexState):
         """ Queries the indexer, prompts the user, then fetches file from peer """
         start_time = time()
-
-        reader, writer = indexer.pair
         files = await self._system_files(indexer)
         files = set(files) - self.get_files()
 
@@ -260,10 +257,11 @@ class Peer:
         picked = self._select_file(files)
 
         # query for loc
-        await Message.write(writer, Request.QUERY)
-        await Message.write(writer, picked)
+        # await Message.write(writer, Request.QUERY)
+        # await Message.write(writer, picked)
+        # peers: set[tuple[str, int]] = await Message.read(reader, set)
 
-        peers: set[tuple[str, int]] = await Message.read(reader, set)
+        peers: set[tuple[str,int]] = await indexer.pair.request(Request.QUERY, set, filename=picked)
         elapsed = time() - start_time
 
         logging.info(f"query for {picked} took {elapsed:.4f} secs")
@@ -317,7 +315,7 @@ class Peer:
             log = logging.getLogger(remote[0])
             log.debug(f"connected")
             
-            await Message.write(writer, Request.DOWNLOAD)
+            await pair.request(Request.DOWNLOAD, filename=filename)
             await self._receive_file_loop(filename, pair, log)
 
         except Exception as e:
@@ -333,7 +331,6 @@ class Peer:
         start_time = time()
         reader, writer = peer
 
-        await Message.write(writer, filename)
         filepath = self.direct.joinpath(filename)
 
         stem = filepath.stem
@@ -357,7 +354,7 @@ class Peer:
             tot_read += amt_read
 
         await Message.write(writer, Request.SUCCESS)
-        log.info(f"sucessfully got file")
+        log.info(f"successfully got file")
 
         elapsed = time() - start_time
         log.debug(f'transfer time of {filename} was {elapsed:.4f} secs')
@@ -409,11 +406,12 @@ class Peer:
             log.debug(f"connected")
 
             # just do one transaction, and close stream
-            request = await Message.read(reader, Request)
-            if request != Request.DOWNLOAD:
+            procedure = await Message.read(reader, Procedure)
+            request, args = procedure
+            if request is not Request.DOWNLOAD:
                 raise RuntimeError("Only download requests are possible")
 
-            await self._send_file_loop(peer, log)
+            await self._send_file_loop(peer, log=log, **args)
 
         except Exception as e:
             log.error(e)
@@ -429,7 +427,7 @@ class Peer:
         log.debug(f"disconnected")
 
 
-    async def _send_file_loop(self, peer: StreamPair, log: logging.Logger):
+    async def _send_file_loop(self, peer: StreamPair, filename: str, log: logging.Logger):
         """
         Runs multiple attempts to send a file based on the receiver response
         """
@@ -437,7 +435,6 @@ class Peer:
         log.info("waiting for selected file")
         reader, writer = peer
 
-        filename = await Message.read(reader, str)
         filepath = self.direct.joinpath(filename)
 
         tot_bytes = 0
@@ -449,7 +446,7 @@ class Peer:
             tot_bytes += amt_read
 
             success = await Message.read(reader, Request)
-            should_send = success != Request.SUCCESS
+            should_send = success is not Request.SUCCESS
 
         elapsed = time() - start_time
         log.debug(
@@ -481,7 +478,7 @@ class Peer:
 
 
 
-def init_log(log: str, verbosity: int, **kwargs: Any):
+def init_log(log: str, verbosity: int, **_):
     """ Specifies logging format and location """
     log_path = Path(f'./{log}')
     log_path.parent.mkdir(exist_ok=True, parents=True)

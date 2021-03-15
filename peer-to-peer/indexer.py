@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import Any
 from dataclasses import dataclass, field
 
 from argparse import ArgumentParser
@@ -10,9 +9,10 @@ from pathlib import Path
 import asyncio as aio
 import socket
 import logging
+from typing import Any
 
 from connection import (
-    StreamPair, Message, Request,
+    Procedure, StreamPair, Message, Request,
     ainput, getpeerbystream, merge_config_args, version_check
 )
 
@@ -31,7 +31,7 @@ class Indexer:
     """ Indexing server node that keeps track of file positions """
     port: int
     peers: dict[StreamPair, PeerState]
-    updates: aio.Queue[StreamPair]
+    updates: aio.Queue[tuple[StreamPair, frozenset[str]]]
 
     PROMPT = (
         "1. List active peers\n"
@@ -40,7 +40,7 @@ class Indexer:
         "Select an Option: ")
     
 
-    def __init__(self, port: int, *args: Any, **kwargs: Any):
+    def __init__(self, port: int, **_):
         """
         Create the state structures for an indexing node; to start running the server, 
         run the function start_server
@@ -72,7 +72,7 @@ class Indexer:
 
     async def start_server(self):
         """
-        Intilizes the indexer server and workers; awaiting on 
+        Initializes the indexer server and workers; awaiting on 
         this method will wait until the server is closed
         """
         # async sync state needs to be init from async context
@@ -114,17 +114,17 @@ class Indexer:
         """
         try:
             while True:
-                update_loc = await self.updates.get()
-                aio.create_task(self._update_files(update_loc)) # will call task_done
+                update_info = await self.updates.get()
+                aio.create_task(self._update_files(*update_info)) # will call task_done
 
         except aio.CancelledError:
             pass
 
 
-    async def _update_files(self, pair: StreamPair):
+    async def _update_files(self, pair: StreamPair, files: frozenset[str]):
         """ Query the given stream for updated file list """
         pair_state = self.peers[pair]
-        files: frozenset[str] = await Message.read(pair.reader, frozenset)
+        # files: frozenset[str] = await Message.read(pair.reader, frozenset)
 
         pair_state.files.clear()
         pair_state.files.update(files)
@@ -209,21 +209,23 @@ class Indexer:
     async def _connect_loop(self, peer: StreamPair):
         """ Request loop handler for each peer connection """
 
-        while request := await Message.read(peer.reader, Request):
-            if request == Request.GET_FILES:
-                await self._send_files(peer)
+        while procedure := await Message.read(peer.reader, Procedure):
+            request, args = procedure
 
-            elif request == Request.UPDATE:
-                await self._receive_update(peer)
+            if request is Request.GET_FILES:
+                await self._send_files(peer, **args)
 
-            elif request == Request.QUERY:
-                await self._query_file(peer)
+            elif request is Request.UPDATE:
+                await self._receive_update(peer, **args)
+
+            elif request is Request.QUERY:
+                await self._query_file(peer, **args)
 
             else:
                 break
 
 
-    
+
     async def _send_files(self, peer: StreamPair):
         """
         Handles the get files request, and sends files to given socket
@@ -233,20 +235,17 @@ class Indexer:
         await Message.write(peer.writer, self.get_files())
 
 
-
-    async def _receive_update(self, peer: StreamPair):
+    async def _receive_update(self, peer: StreamPair, files: frozenset[str]):
         """ Notify update handler of a update task, and wait for completion """
         self.peers[peer].log.debug("updating file info")
         signal = self.peers[peer].signal
         signal.clear()
-        await self.updates.put(peer)
+        await self.updates.put((peer, files))
         await signal.wait() # block stream access til finished
 
 
-
-    async def _query_file(self, peer: StreamPair):
-        """ Reply to stream with the peers that have specfied file """
-        filename = await Message.read(peer.reader, str)
+    async def _query_file(self, peer: StreamPair, filename: str):
+        """ Reply to stream with the peers that have specified file """
         self.peers[peer].log.debug(f'querying for file {filename}')
 
         await self.updates.join() # wait for no more file updates
@@ -262,7 +261,7 @@ class Indexer:
 
 
 
-def init_log(log: str, *args: Any, **kwargs: Any):
+def init_log(log: str, **kwargs: Any):
     """ Specifies logging format and location """
     log_path = Path(f'./{log}')
     log_path.parent.mkdir(exist_ok=True, parents=True)
