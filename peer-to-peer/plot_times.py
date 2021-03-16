@@ -61,7 +61,7 @@ class Label(NamedTuple):
 
 
     def __str__(self):
-        return f'{self.clients} Clients,{self.file_type}B Files'
+        return f'{self.clients} Peers,{self.file_type}B Files'
 
 
     @staticmethod
@@ -161,7 +161,7 @@ def graph_avgs(name: str, avgfile: str, graphpath: Optional[str]):
     with open(avgpath, 'r') as f:
         avgs: dict[str, float] = json.load(f)
         avgs = {
-            label: time
+            label: time * 1000 # convert to ms
             for label, time in sorted(
                 avgs.items(),
                 key=Label.sort
@@ -172,7 +172,7 @@ def graph_avgs(name: str, avgfile: str, graphpath: Optional[str]):
 
         plt.plot(avgs.keys(), avgs.values())
         plt.xlabel("Runtime Configurations")
-        plt.ylabel("Time (seconds)")
+        plt.ylabel("Time (milliseconds)")
         plt.title(name)
 
         if graphpath is None:

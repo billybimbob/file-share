@@ -101,6 +101,8 @@ class Indexer:
 
         except Exception as e:
             logging.exception(e)
+            for task in aio.all_tasks():
+                task.cancel()
 
         logging.info("index server stopped")
 
@@ -123,15 +125,19 @@ class Indexer:
 
     async def _update_files(self, pair: StreamPair, files: frozenset[str]):
         """ Query the given stream for updated file list """
-        pair_state = self.peers[pair]
-        # files: frozenset[str] = await Message.read(pair.reader, frozenset)
+        try:
+            pair_state = self.peers[pair]
+            # files: frozenset[str] = await Message.read(pair.reader, frozenset)
 
-        pair_state.files.clear()
-        pair_state.files.update(files)
+            pair_state.files.clear()
+            pair_state.files.update(files)
 
-        self.peers[pair].log.debug("got updated files")
-        self.updates.task_done()
-        pair_state.signal.set()
+            self.peers[pair].log.debug("got updated files")
+            self.updates.task_done()
+            pair_state.signal.set()
+
+        except aio.CancelledError:
+            pass
 
     #endregion
 

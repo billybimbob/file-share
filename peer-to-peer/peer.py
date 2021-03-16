@@ -159,6 +159,8 @@ class Peer:
 
         except Exception as e:
             logging.exception(e)
+            for task in aio.all_tasks():
+                task.cancel()
 
         logging.debug("disconnected from indexing server")
         logging.debug("ending peer")

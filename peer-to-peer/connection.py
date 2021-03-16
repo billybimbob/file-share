@@ -87,7 +87,7 @@ class Message:
 
 
     def unwrap(self) -> Any:
-        """ Get the payload or raise it as a decoded exception """
+        """ Return the payload or raise it as a decoded exception """
         if isinstance(self.payload, Exception):
             # potentially could have message of just random bytes
             raise self.payload

@@ -21,15 +21,17 @@ All the requirements, including the graphing capabilities can be initialized in 
 2. Create a new container and run a new shell:
 
     ```bash
-    docker run run -it --rm p2p /bin/bash
+    docker run -it --rm p2p /bin/bash
     ```
+
+3. All commands specified below can be called in the container shell
 
 ## Running
 
 The project comprises of three main components:
 
 * `indexer.py`: creates an indexing server
-* `peer.py`: creates clients
+* `peer.py`: creates peers
 * `evaluation.py`: runs various server-client configurations and times performance
 
 In order to run any of the above scripts run in the terminal the following command:
@@ -59,7 +61,17 @@ A peer has its file directory specified, but the exposed directory cannot show n
 
 ### Evaluation
 
-The `evaluation.py` script automates much of the initialization steps listed above, with an assumption of the directory structure listed below. The main purpose of this script is to time the performance of the peer-peer and peer-indexer communication in different configuration contexts. The process to running the evaluations is simply running the script as specified above while supplying the args.
+The `evaluation.py` script automates much of the initialization steps listed above, with an assumption of the directory structure listed below. When ran, the folder `peers` is created and populated, which are the peer directories.
+
+The main purpose of this script is to time the performance of the peer-peer and peer-indexer communication in different configuration contexts. The process to running the evaluations is simply running the script as specified above while supplying the args.
+
+#### Log Generation
+
+For convenience, all of the generated log files can be retested by using the bash script `eval-loop.sh`, which runs evaluations on multiple run configurations:
+
+```bash
+./eval-loop.sh
+```
 
 #### Directory Structure
 
@@ -97,3 +109,5 @@ Note: this dependency is only required for optional script `plot_times.py`:
 ```bash
 pip3 install matplotlib
 ```
+
+The dependencies are already installed if ran in the docker container.
