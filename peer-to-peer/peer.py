@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from typing import NamedTuple, Optional, Union
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from argparse import ArgumentParser
@@ -245,6 +246,7 @@ class Peer:
         logging.info(f"{self.user} session ending")
 
 
+
     async def _system_files(self, indexer: IndexState) -> list[str]:
         """ Fetches all the files in the system based on indexer """
         files: frozenset[str] = await indexer.pair.request(Request.GET_FILES, as_type=frozenset)
@@ -265,7 +267,6 @@ class Peer:
         files = await self._system_files(indexer)
         get_elapsed = time() - start_time
 
-        files = set(files) - self.get_files()
         if len(files) == 0:
             print('There are no files that can be downloaded')
             logging.exception("no files can be downloaded")
@@ -281,18 +282,24 @@ class Peer:
         elapsed = (get_elapsed + query_elapsed) / 2
         logging.info(f"query for {picked} took {elapsed:.4f} secs")
 
-        if len(peers) == 0:
-            logging.exception(f"location for {picked} could not be found")
+        self_loc = socket.gethostname(), self.port
+        target = None
+
+        while target is None and len(peers) > 0:
+            peer = peers.pop()
+            if self_loc != peer:
+                target = peer
+
+        if target is None:
+            logging.error(f"location for {picked} is either in the peer of cannot be found")
             return
         
         # use a random peer target
-        target = peers.pop()
         await self._peer_download(picked, target)
-
         self.dir_update.set()
 
 
-    def _select_file(self, fileset: set[str]) -> str:
+    def _select_file(self, fileset: Iterable[str]) -> str:
         """ Take in user input to select a file from the given set """
         # sort might be slow
         files = sorted(fileset)
@@ -492,7 +499,6 @@ class Peer:
 
         return filesize
         
-
 
 
 def init_log(log: str, verbosity: int, **_):

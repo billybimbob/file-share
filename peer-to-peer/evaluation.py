@@ -64,7 +64,7 @@ async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRu
     indicate that the peer is ready to take in user input
     """
     user = f'peer{id}'
-    log = f'{LOGS}/{label}/peers/{user}.log'
+    log = f'{LOGS}/{label}/{user}.log'
     peer_dir = f'{PEERS}/{Path(src_dir).name}/{id}'
 
     init_peer_paths(user, log, peer_dir, src_dir)
@@ -77,7 +77,6 @@ async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRu
         stdin=proc.PIPE,
         stdout=proc.PIPE
     )
-
 
     if peer.stdin:
         peer.stdin.write('1\n'.encode())
@@ -92,8 +91,6 @@ def init_peer_paths(user: str, log: str, peer_dir: str, src_dir: str):
     """ Clear old log info and sets up peer directory """
     if not ((logpath := Path(log)).exists()):
         logpath.parent.mkdir(exist_ok=True, parents=True)
-    # else:
-    #     open(log, 'w').close()
 
     # if not (peer_path := Path(peer_dir)).exists():
     peer_path = Path(peer_dir)
@@ -120,7 +117,6 @@ async def get_response(peer: proc.Process):
         return
 
     print(f'getting response from {peer.pid}')
-
     try:
         while True:
             # might want to make wait interval as param
@@ -193,6 +189,8 @@ async def start_indexer(log: str) -> proc.Process:
         stdin=proc.PIPE,
         stdout=proc.PIPE
     )
+
+    await get_response(server)
 
     return server
 
