@@ -20,7 +20,7 @@ import shlex
 
 CONFIGS = 'configs'
 SERVERS = 'servers'
-PEERS = 'peers' # TODO: change to peers
+PEERS = 'peers'
 LOGS = 'logs'
 
 # endregion
@@ -54,7 +54,6 @@ async def create_peers(num_peers: int, file_size: str, verbosity: int) -> Sequen
         for i in range(num_peers)
     ])
 
-    print(f'got {len(peers)} peers')
     return peers
 
 
@@ -88,7 +87,7 @@ async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRu
 
 
 def init_peer_paths(user: str, log: str, peer_dir: str, src_dir: str):
-    """ Clear old log info and sets up peer directory """
+    """ Inits log info and sets up peer directory """
     if not ((logpath := Path(log)).exists()):
         logpath.parent.mkdir(exist_ok=True, parents=True)
 
@@ -116,7 +115,6 @@ async def get_response(peer: proc.Process):
         print('cannot get response from peer')
         return
 
-    print(f'getting response from {peer.pid}')
     try:
         while True:
             # might want to make wait interval as param
@@ -128,11 +126,7 @@ async def get_response(peer: proc.Process):
     except aio.TimeoutError:
         pass
 
-    print(f'response done for {peer.pid}')
 
-
-
-from datetime import datetime
 
 async def run_downloads(peers: Sequence[PeerRun], request: int):
     """ Passes input to the client processes to request downloads from the server """
@@ -152,7 +146,6 @@ async def run_downloads(peers: Sequence[PeerRun], request: int):
         await get_response(peer.process)
 
     await aio.gather(*[ request_peer(p) for p in peers ])
-    print(f'{datetime.now().time()}: finished downloads')
 
 
 
@@ -191,7 +184,6 @@ async def start_indexer(log: str) -> proc.Process:
     )
 
     await get_response(server)
-
     return server
 
 

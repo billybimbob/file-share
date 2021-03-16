@@ -12,6 +12,7 @@ from time import time
 import asyncio as aio
 import socket
 import hashlib
+import re
 import logging
 
 from connection import (
@@ -223,7 +224,6 @@ class Peer:
         """ Cli for peer """
         try:
             while request := await ainput(Peer.PROMPT):
-                logging.info(f'request is {request!r}')
                 async with indexer.access:
                     if request == '1':
                         await self._list_system(indexer)
@@ -234,8 +234,6 @@ class Peer:
                     else:
                         print(f'Exiting {self.user} peer server')
                         break
-
-            logging.info(f'request is {request!r}')
 
         except aio.CancelledError:
             pass
@@ -272,7 +270,7 @@ class Peer:
             logging.exception("no files can be downloaded")
             return
 
-        picked = self._select_file(files)
+        picked = await self._select_file(files)
 
         # query for loc
         start_time = time()
@@ -283,15 +281,20 @@ class Peer:
         logging.info(f"query for {picked} took {elapsed:.4f} secs")
 
         self_loc = socket.gethostname(), self.port
+        at_self = False
         target = None
 
         while target is None and len(peers) > 0:
             peer = peers.pop()
-            if self_loc != peer:
+            at_self = self_loc == peer
+            if not at_self:
                 target = peer
 
         if target is None:
-            logging.error(f"location for {picked} is either in the peer of cannot be found")
+            if at_self:
+                logging.error(f'location for {picked} is in own peer')
+            else:
+                logging.error(f"location for {picked} cannot be found")
             return
         
         # use a random peer target
@@ -299,14 +302,14 @@ class Peer:
         self.dir_update.set()
 
 
-    def _select_file(self, fileset: Iterable[str]) -> str:
+    async def _select_file(self, fileset: Iterable[str]) -> str:
         """ Take in user input to select a file from the given set """
         # sort might be slow
         files = sorted(fileset)
         options = (f'{i+1}: {file}' for i, file in enumerate(files))
 
         print('\n'.join(options))
-        choice = input("enter file to download: ")
+        choice = await ainput("enter file to download: ")
 
         if choice.isnumeric():
             idx = int(choice)-1
@@ -360,13 +363,22 @@ class Peer:
 
         filepath = self.direct.joinpath(filename)
 
-        stem = filepath.stem
         exts = "".join(filepath.suffixes)
-        dup_mod = 1
+        stem = filepath.stem
+        log.info(f'{stem=}')
+
+        # can have issues with different files having the same name
+        if m := re.match(r'\)(\d+)\(', stem[::-1]):
+            dup_mod = int(m[1])
+            stem = stem[:-m.end()]
+        else:
+            dup_mod = 1
+
         while filepath.exists():
             filepath = filepath.with_name(f'{stem}({dup_mod}){exts}')
             dup_mod += 1
 
+        log.info(f'{stem=}')
         got_file = False
         num_tries = 0
         tot_read = 0

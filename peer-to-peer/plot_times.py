@@ -111,11 +111,14 @@ def record_times(time_file: str, run_label: str, times: list[float]):
 
     with open(filepath, mode) as f:
         try:
-            obj = json.load(f)
+            obj: dict[str,list[float]] = json.load(f)
         except json.JSONDecodeError:
-            obj: dict[str, Any] = {}
+            obj: dict[str,list[float]] = {}
 
-        obj[run_label] = times
+        if run_label in obj:
+            obj[run_label].extend(times)
+        else:
+            obj[run_label] = times
 
         # overwrite content
         f.seek(0)
