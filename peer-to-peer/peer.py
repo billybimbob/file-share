@@ -5,6 +5,7 @@ from typing import NamedTuple, Optional, Union
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
+from functools import partial
 from argparse import ArgumentParser
 from pathlib import Path
 from time import time
@@ -15,6 +16,7 @@ import hashlib
 import re
 import logging
 
+from indexer import Login
 from connection import (
     CHUNK_SIZE, Message, Procedure, Request, StreamPair,
     ainput, merge_config_args, version_check
@@ -128,10 +130,8 @@ class Peer:
 
                     indexer = IndexState(start, in_pair)
 
-                    # don't send tuple because of type erasure
-                    await Message.write(in_pair.writer, self.user)
-                    await Message.write(in_pair.writer, host)
-                    await Message.write(in_pair.writer, self.port)
+                    login = Login(self.user, host, self.port)
+                    await Message.write(in_pair.writer, login)
 
                     # make sure that event is listening before it can be set and cleared
                     first_update = aio.create_task(self.dir_update.wait())
@@ -276,17 +276,21 @@ class Peer:
 
         # query for loc
         start_time = time()
-        peers: set[tuple[str,int]] = await indexer.pair.request(Request.QUERY, filename=picked, as_type=set)
-        query_elapsed = time() - start_time
+        peers: set[tuple[str, int]] = await indexer.pair.request(
+            Request.QUERY,
+            filename=picked,
+            as_type=set
+        )
 
+        query_elapsed = time() - start_time
         elapsed = (get_elapsed + query_elapsed) / 2
         logging.info(f"query for {picked} took {elapsed:.4f} secs")
 
         self_loc = socket.gethostname(), self.port
-        at_self = False
+        at_self = True
         target = None
 
-        while target is None and len(peers) > 0:
+        while at_self and len(peers) > 0:
             peer = peers.pop()
             at_self = self_loc == peer
             if not at_self:
@@ -331,43 +335,46 @@ class Peer:
         fin, pend = await aio.wait({aio.open_connection(*target)}, timeout=8)
         for p in pend: p.cancel()
 
-        if len(fin) > 0:
-            pair = fin.pop().result() # will only be one result
-            pair = StreamPair(*pair)
-            reader, writer = pair
+        if len(fin) == 0:
+            logging.error('connection attempt failed')
+            return
 
-            log = logging.getLogger()
+        pair = fin.pop().result() # will only be one result
+        pair = StreamPair(*pair)
+        reader, writer = pair
 
-            try:
-                await Message.write(writer, self.user)
-                user = await Message.read(reader, str)
+        log = logging.getLogger()
 
-                log = logging.getLogger(user)
-                log.debug("connected")
-                
-                await pair.request(Request.DOWNLOAD, filename=filename)
-                await self._receive_file_loop(filename, pair, log)
+        try:
+            await Message.write(writer, self.user)
+            user = await Message.read(reader, str)
 
-            except Exception as e:
-                logging.exception(e)
+            log = logging.getLogger(user)
+            log.debug("connected")
+            
+            await self._receive_file_retries(filename, pair, log)
 
-            finally:
-                writer.close()
-                await writer.wait_closed()
-                log.debug("disconnected")
+        except Exception as e:
+            logging.exception(e)
+
+        finally:
+            if not reader.at_eof():
+                writer.write_eof()
+
+            writer.close()
+            await writer.wait_closed()
+            log.debug("disconnected")
 
 
 
-    async def _receive_file_loop(self, filename: str, peer: StreamPair, log: logging.Logger):
+    async def _receive_file_retries(self, filename: str, peer: StreamPair, log: logging.Logger):
         """ Runs multiple attempts to download a file from the server if needed """
         start_time = time()
-        reader, writer = peer
+        # reader, _ = peer
 
         filepath = self.direct.joinpath(filename)
-
         exts = "".join(filepath.suffixes)
         stem = filepath.stem
-        log.info(f'{stem=}')
 
         # can have issues with different files having the same name
         if m := re.match(r'\)(\d+)\(', stem[::-1]):
@@ -380,24 +387,22 @@ class Peer:
             filepath = filepath.with_name(f'{stem}({dup_mod}){exts}')
             dup_mod += 1
 
-        log.info(f'{stem=}')
         got_file = False
         num_tries = 0
         tot_read = 0
 
         while not got_file and num_tries < 5: # TODO: make param
-            if num_tries > 0:
-                log.info(f"retrying {filename} download")
-                await Message.write(writer, Request.RETRY)
-
-            got_file, amt_read = await self._receive_file(filepath, reader)
+            got_file, amt_read = await peer.request(
+                Request.DOWNLOAD,
+                filename=filename,
+                receiver=partial(self._receive_file, filepath)
+            )
+            # await self._receive_file(filepath, reader)
             num_tries += 1
             tot_read += amt_read
 
-        await Message.write(writer, Request.SUCCESS)
-        log.info(f"successfully got file")
-
         elapsed = time() - start_time
+        log.info(f"successfully got file")
         log.debug(f'received {filename} was {elapsed:.4f} secs')
         log.info(f'read {(tot_read / 1000):.2f} KB')
 
@@ -445,13 +450,14 @@ class Peer:
             log = logging.getLogger(user)
             log.debug(f"connected")
 
-            # just do one transaction, and close stream
-            procedure = await Message.read(reader, Procedure)
-            request, args = procedure
-            if request is not Request.DOWNLOAD:
-                raise RuntimeError("Only download requests are possible")
+            while procedure := await Message.read(reader, Procedure):
+                if procedure.request is Request.DOWNLOAD:
+                    await procedure(self._send_file, peer, log=log)
+                else:
+                    raise RuntimeError("Request type is not possible")
 
-            await self._send_file_loop(peer, log=log, **args)
+        except aio.IncompleteReadError:
+            pass
 
         except Exception as e:
             log.exception(e)
@@ -467,33 +473,14 @@ class Peer:
         log.debug(f"disconnected")
 
 
-    async def _send_file_loop(self, peer: StreamPair, filename: str, log: logging.Logger):
+    async def _send_file(self, peer: StreamPair, filename: str, log: logging.Logger):
         """
-        Runs multiple attempts to send a file based on the receiver response
+        Runs an attempts to send a file to a peer
         """
         start_time = time()
-        reader, writer = peer
+        _, writer = peer
         filepath = self.direct.joinpath(filename)
 
-        tot_bytes = 0
-        should_send = True
-
-        while should_send:
-            log.debug(f'trying to send file {filepath}')
-            amt_read = await self._send_file(filepath, writer)
-            tot_bytes += amt_read
-
-            success = await Message.read(reader, Request)
-            should_send = success is not Request.SUCCESS
-
-        elapsed = time() - start_time
-        log.debug(
-            f'sent {filename}: {(tot_bytes/1000):.2f} KB in {elapsed:.5f} secs'
-        )
-
-
-    async def _send_file(self, filepath: Path, writer: aio.StreamWriter) -> int:
-        """ Used by server side to send file contents to a given client """
         filesize = filepath.stat().st_size
 
         with open(filepath, 'rb') as f:
@@ -504,14 +491,16 @@ class Peer:
 
             # logger.info(f'checksum of: {checksum}')
             await Message.write(writer, checksum)
-
             await Message.write(writer, filesize)
 
             f.seek(0)
             writer.writelines(f) # don't need to encode
             await writer.drain()
 
-        return filesize
+        elapsed = time() - start_time
+        log.debug(
+            f'sent {filename}: {(filesize/1000):.2f} KB in {elapsed:.5f} secs'
+        )
         
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import Any, NamedTuple, Optional, TypeVar, Union, cast
+from typing import Any, Awaitable, Callable, NamedTuple, Optional, TypeVar, Union, cast
 from enum import Enum
 from io import UnsupportedOperation
 # from collections import namedtuple
@@ -26,8 +26,6 @@ class Request(Enum):
     """ Request messages """
     GET_FILES = 'get_files_list'
     DOWNLOAD = 'download'
-    SUCCESS = 'success'
-    RETRY = 'retry'
     UPDATE = 'update_files'
     QUERY = 'query'
 
@@ -43,13 +41,37 @@ class Request(Enum):
         return request
 
 
-class Procedure(NamedTuple):
-    """ Request message wrapped with keyword args """
-    request: Request
-    args: dict[str, Any]
-
-
 T = TypeVar('T')
+
+class Procedure(NamedTuple):
+    """ Request message wrapped with positional and keyword args """
+    request: Request
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+
+    def __call__(
+        self,
+        funct: Callable[..., T],
+        *args: Any,
+        self_first: bool = False,
+        **kwargs: Any) -> T:
+        """
+        Calls the passed function, supplying in a merge of all of the args.
+        The order of the positional and keyword args is based on self_first
+        """
+        pos_args = (
+            args + self.args
+            if not self_first else
+            self.args + args
+        )
+        key_args = (
+            {**kwargs, **self.kwargs}
+            if not self_first else
+            {**self.kwargs, **kwargs}
+        )
+
+        return funct(*pos_args, **key_args)
+
 
 
 class Message:
@@ -110,6 +132,9 @@ class Message:
         return cast(as_type, message.unwrap())
 
 
+Receiver = Callable[[asyncio.StreamReader], Awaitable[T]]
+
+
 class StreamPair(NamedTuple):
     """ Stream read-write pairing """
     reader: asyncio.StreamReader
@@ -117,15 +142,26 @@ class StreamPair(NamedTuple):
 
     async def request(
         self,
-        req_type: Request, *,
+        req_type: Request,
+        *args: Any,
         as_type: Optional[type[T]] = None,
+        receiver: Optional[Receiver[T]] = None,
         **kwargs: Any) -> T:
         """
-        Sends a request with keyword arguments, and gets response back if as_type 
-        is specified; returns None if as_type is not defined
+        Sends a request with keyword arguments, and gets a response back if as_type 
+        or receiver is specified, otherwise returns None. Only one of as_type or 
+        receiver should be defined; receiver specifies how the stream will be read 
+        in order to generate a value, while as_type specifies to use a default 
+        receiver where one message is read, and converted to the type
         """
-        procedure = Procedure(req_type, kwargs)
+        procedure = Procedure(req_type, args, kwargs)
         await Message.write(self.writer, procedure)
+
+        if receiver is not None and as_type is not None:
+            raise ValueError("Only as_type or receiver can be defined")
+
+        if receiver is not None:
+            return await receiver(self.reader)
         if as_type is not None:
             return await Message.read(self.reader, as_type)
         else:

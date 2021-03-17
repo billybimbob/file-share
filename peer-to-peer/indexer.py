@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
+from typing import Any, NamedTuple, Optional
 from dataclasses import dataclass, field
 
 from argparse import ArgumentParser
@@ -25,12 +26,27 @@ class PeerState:
     log: logging.Logger = field(default_factory=logging.getLogger)
 
 
+class PeerUpdate(NamedTuple):
+    """ Pending changes to update the a given peer's state """
+    peer: StreamPair
+    args: Optional[dict[str, Any]] = None
+
+
+class Login(NamedTuple):
+    """ Initial peer identification """
+    user: str
+    host: str
+    port: int
+
 
 class Indexer:
     """ Indexing server node that keeps track of file positions """
     port: int
     peers: dict[StreamPair, PeerState]
-    updates: aio.Queue[tuple[StreamPair, frozenset[str]]]
+    updates: aio.PriorityQueue[tuple[int, PeerUpdate]]
+
+    DELETE_PRIORITY = 1
+    UPDATE_PRIORITY = 2
 
     PROMPT = (
         "1. List active peers\n"
@@ -57,16 +73,15 @@ class Indexer:
         )
 
 
-    def get_location(self, filename: str) -> tuple[StreamPair]:
+    def get_location(self, filename: str) -> set[tuple[str, int]]:
         """ Find the peer nodes associated with a file """
-        locs = { # use set to find unique pairs
-            pair
-            for pair, info in self.peers.items()
+        locs = {
+            info.loc
+            for info in self.peers.values()
             if filename in info.files
         }
 
-        # make tuple to have predictable iter
-        return tuple(locs)
+        return locs
 
 
     async def start_server(self):
@@ -75,7 +90,7 @@ class Indexer:
         this method will wait until the server is closed
         """
         # async sync state needs to be init from async context
-        self.updates = aio.Queue()
+        self.updates = aio.PriorityQueue()
 
         def to_connection(reader: aio.StreamReader, writer: aio.StreamWriter):
             """ Indexer closure as a stream callback """
@@ -116,28 +131,42 @@ class Indexer:
         """
         try:
             while True:
-                update_info = await self.updates.get()
-                aio.create_task(self._update_files(*update_info)) # will call task_done
+                priority, update_info = await self.updates.get()
+                peer, args = update_info
+
+                if priority == Indexer.UPDATE_PRIORITY and args:
+                    self._update_files(peer, **args) # will call task_done
+                elif priority == Indexer.DELETE_PRIORITY:
+                    self._delete_peer(peer)
+                else:
+                    logging.error(f'got unknown priority or update missing args')
 
         except aio.CancelledError:
             pass
 
 
-    async def _update_files(self, pair: StreamPair, files: frozenset[str]):
+    def _update_files(self, peer: StreamPair, files: frozenset[str]):
         """ Query the given stream for updated file list """
-        try:
-            pair_state = self.peers[pair]
-            # files: frozenset[str] = await Message.read(pair.reader, frozenset)
+        if peer not in self.peers:
+            return
 
-            pair_state.files.clear()
-            pair_state.files.update(files)
+        peer_state = self.peers[peer]
 
-            self.peers[pair].log.debug("got updated files")
-            self.updates.task_done()
-            pair_state.signal.set()
+        peer_state.files.clear()
+        peer_state.files.update(files)
 
-        except aio.CancelledError:
-            pass
+        self.peers[peer].log.debug("got updated files")
+        self.updates.task_done()
+        peer_state.signal.set()
+
+    
+    def _delete_peer(self, peer: StreamPair):
+        """ Removes a peer entry, should only be called after peer ends connection """
+        if peer in self.peers:
+            del self.peers[peer]
+        
+        self.updates.task_done()
+    
 
     #endregion
 
@@ -176,10 +205,8 @@ class Indexer:
         logger = logging.getLogger()
 
         try:
-            username = await Message.read(reader, str)
-            host = await Message.read(reader, str)
-            port = await Message.read(reader, int)
-
+            login = await Message.read(reader, Login)
+            username, host, port = login
             loc = (host, port)
             logger = logging.getLogger(username)
 
@@ -205,9 +232,7 @@ class Indexer:
             logger.debug('ending connection')
             writer.close()
 
-            if peer in self.peers:
-                del self.peers[peer]
-
+            await self.updates.put((Indexer.DELETE_PRIORITY, PeerUpdate(peer)))
             await writer.wait_closed()
 
 
@@ -216,16 +241,16 @@ class Indexer:
         """ Request loop handler for each peer connection """
 
         while procedure := await Message.read(peer.reader, Procedure):
-            request, args = procedure
+            request = procedure.request
 
             if request is Request.GET_FILES:
-                await self._send_files(peer, **args)
+                await procedure(self._send_files, peer)
 
             elif request is Request.UPDATE:
-                await self._receive_update(peer, **args)
+                await procedure(self._receive_update, peer)
 
             elif request is Request.QUERY:
-                await self._query_file(peer, **args)
+                await procedure(self._query_file, peer)
 
             else:
                 break
@@ -241,27 +266,20 @@ class Indexer:
         await Message.write(peer.writer, self.get_files())
 
 
-    async def _receive_update(self, peer: StreamPair, files: frozenset[str]):
+    async def _receive_update(self, peer: StreamPair, **update_args: Any):
         """ Notify update handler of a update task, and wait for completion """
         self.peers[peer].log.debug("updating file info")
         signal = self.peers[peer].signal
         signal.clear()
-        await self.updates.put((peer, files))
+        await self.updates.put((Indexer.UPDATE_PRIORITY, PeerUpdate(peer, update_args)))
         await signal.wait() # block stream access til finished
 
 
     async def _query_file(self, peer: StreamPair, filename: str):
         """ Reply to stream with the peers that have specified file """
         self.peers[peer].log.debug(f'querying for file {filename}')
-
         await self.updates.join() # wait for no more file updates
-
-        assoc_peers = {
-            self.peers[file_peer].loc
-            for file_peer in self.get_location(filename)
-        }
-
-        await Message.write(peer.writer, assoc_peers)
+        await Message.write(peer.writer, self.get_location(filename))
 
     #endregion
 
