@@ -57,17 +57,18 @@ class Procedure(NamedTuple):
         **kwargs: Any) -> T:
         """
         Calls the passed function, supplying in a merge of all of the args.
-        The order of the positional and keyword args is based on self_first
+        The order of the positional and precedence of the keyword args is
+        based on self_first
         """
         pos_args = (
             args + self.args
             if not self_first else
             self.args + args
         )
-        key_args = (
-            {**kwargs, **self.kwargs}
-            if not self_first else
+        key_args = ( # 2nd keywords override
             {**self.kwargs, **kwargs}
+            if not self_first else
+            {**kwargs, **self.kwargs}
         )
 
         return funct(*pos_args, **key_args)
