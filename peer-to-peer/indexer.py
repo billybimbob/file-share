@@ -101,16 +101,18 @@ class Indexer:
             server = await aio.start_server(to_connection, host, self.port, start_serving=False)
 
             async with server:
-                if server.sockets:
-                    addr = server.sockets[0].getsockname()[0]
-                    logging.info(f'indexing server on {addr}')
+                if not server.sockets:
+                    return
 
-                    updates = aio.create_task(self._update_loop())
+                addr = server.sockets[0].getsockname()[0]
+                logging.info(f'indexing server on {addr}')
 
-                    await server.start_serving()
-                    await aio.create_task(self._session())  
+                updates = aio.create_task(self._update_loop())
 
-                    updates.cancel()
+                await server.start_serving()
+                await aio.create_task(self._session())  
+
+                updates.cancel()
 
             await server.wait_closed()
 
@@ -119,7 +121,8 @@ class Indexer:
             for task in aio.all_tasks():
                 task.cancel()
 
-        logging.info("index server stopped")
+        finally:
+            logging.info("index server stopped")
 
 
 

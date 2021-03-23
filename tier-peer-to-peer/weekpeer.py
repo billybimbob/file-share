@@ -16,9 +16,9 @@ import hashlib
 import re
 import logging
 
-from indexer import Login
 from connection import (
-    CHUNK_SIZE, Message, Procedure, Request, StreamPair,
+    CHUNK_SIZE,
+    Message, Procedure, Request, StreamPair, Login,
     ainput, merge_config_args, version_check
 )
 
