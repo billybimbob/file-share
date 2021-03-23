@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 from typing import Any, Callable, NamedTuple, Optional, TypeVar, Union, cast
+from dataclasses import dataclass
 from collections.abc import Awaitable
+
 from enum import Enum
 from io import UnsupportedOperation
 
@@ -43,11 +45,13 @@ class Request(Enum):
 
 T = TypeVar('T')
 
-class Procedure(NamedTuple):
+
+@dataclass(frozen=True)
+class Procedure:
     """ Request message wrapped with positional and keyword args """
     request: Request
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
+    _args: tuple[Any, ...]
+    _kwargs: dict[str, Any]
 
     def __call__(
         self,
@@ -61,14 +65,14 @@ class Procedure(NamedTuple):
         based on self_first
         """
         pos_args = (
-            args + self.args
+            args + self._args
             if not self_first else
-            self.args + args
+            self._args + args
         )
         key_args = ( # 2nd keywords override
-            self.kwargs | kwargs
+            self._kwargs | kwargs
             if not self_first else
-            kwargs | self.kwargs
+            kwargs | self._kwargs
         )
 
         return funct(*pos_args, **key_args)
@@ -77,7 +81,7 @@ class Procedure(NamedTuple):
 
 class Message:
     """ Information that is passed between socket streams """
-    payload: Any # pre-pickled data
+    _payload: Any # pre-pickled data
 
     HEADER = struct.Struct("!I")
 
@@ -86,7 +90,7 @@ class Message:
         Creates a message that can be packed; the payload should 
         not be pickled yet
         """
-        self.payload = payload
+        self._payload = payload
 
 
     @staticmethod
@@ -103,7 +107,7 @@ class Message:
 
     def pack(self) -> bytes:
         """ Get the message with a metadata header for streams """
-        data = pickle.dumps(self.payload)
+        data = pickle.dumps(self._payload)
         size = len(data)
         header = Message.HEADER.pack(size)
         return header + data
@@ -111,11 +115,11 @@ class Message:
 
     def unwrap(self) -> Any:
         """ Return the payload or raise it as a decoded exception """
-        if isinstance(self.payload, Exception):
+        if isinstance(self._payload, Exception):
             # potentially could have message of just random bytes
-            raise self.payload
+            raise self._payload
         else:
-            return self.payload
+            return self._payload
 
 
     @staticmethod
@@ -158,12 +162,12 @@ class StreamPair(NamedTuple):
         procedure = Procedure(req_type, args, kwargs)
         await Message.write(self.writer, procedure)
 
-        if receiver is not None and as_type is not None:
-            raise ValueError("Only as_type or receiver can be defined")
+        if receiver and as_type:
+            raise ValueError("Only one of as_type or receiver can be defined")
 
-        if receiver is not None:
+        if receiver:
             return await receiver(self.reader)
-        if as_type is not None:
+        elif as_type:
             return await Message.read(self.reader, as_type)
         else:
             return cast(Any, None) # kind of hacky
@@ -174,6 +178,27 @@ class Login(NamedTuple):
     user: str
     host: str
     port: int
+
+#endregion
+
+
+#region query messaging across super peers
+
+class Query(NamedTuple):
+    """ 
+    Information broadcasted to super peers for either file location or
+    file list queries
+    """
+    id: str
+    alive_time: Optional[int]
+    filename: Optional[str]
+
+
+class QueryHit(NamedTuple):
+    """ Response to a location or list query """
+    id: str
+    location: Optional[tuple[str, int]]
+    filelist: list[str]
 
 #endregion
 

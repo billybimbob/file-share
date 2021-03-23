@@ -72,8 +72,8 @@ class Vertex:
 
 class Graph:
     """ Stores a graph structure """
-    vertices: list[Vertex]
-    edges: dict[tuple[Vertex, Vertex], int]
+    _vertices: list[Vertex]
+    _edges: dict[tuple[Vertex, Vertex], int]
 
     def __init__(self, *vertices: Vertex):
         """create vertex and edge lookup table"""
@@ -88,8 +88,8 @@ class Graph:
             reverse=True
         )
 
-        self.vertices = sorted(set(vertices), key=lambda vert: vert.value)
-        self.edges = {
+        self._vertices = sorted(set(vertices), key=lambda vert: vert.value)
+        self._edges = {
             (v1, v2): weight
             for v1, v2, weight in unnested
         }
@@ -108,16 +108,16 @@ class Graph:
 
 
     def __str__(self):
-        str_verts = [str(vertex) for vertex in self.vertices]
+        str_verts = [str(vertex) for vertex in self._vertices]
         ret = [' '.join([' '] + str_verts)]
 
-        for i, a in enumerate(self.vertices):
+        for i, a in enumerate(self._vertices):
             weights = [str_verts[i]]
             weights += [
-                str(self.edges[(a, b)])
-                if (a, b) in self.edges else
+                str(self._edges[(a, b)])
+                if (a, b) in self._edges else
                 '0' 
-                for b in self.vertices
+                for b in self._vertices
             ]
 
             ret.append(' '.join(weights))
@@ -129,12 +129,12 @@ class Graph:
         return str(self)
 
     def __len__(self):
-        return len(self.vertices)
+        return len(self._vertices)
 
 
     def undirected_weight(self):
         tot_weight = 0
-        for weight in self.edges.values():
+        for weight in self._edges.values():
             tot_weight += weight
 
         return int(tot_weight/2)
@@ -174,7 +174,7 @@ class Graph:
     def shortest_path(self, start: Vertex) -> Sequence[Any]:
         """ Calculates a shortest path from the start vertex """
         # creates a dictionary of objects based on the size of the graph
-        v_attrs = {vertex: Graph.MinAttrs() for vertex in self.vertices}
+        v_attrs = {vertex: Graph.MinAttrs() for vertex in self._vertices}
         v_attrs[start].key = 0
         end = start
 
@@ -185,7 +185,7 @@ class Graph:
 
             for neighbor in vertex.neighbors(): # updates adjacent vals
                 n_attr = v_attrs[neighbor]
-                check_val = v_attrs[vertex].key + self.edges[(vertex, neighbor)]
+                check_val = v_attrs[vertex].key + self._edges[(vertex, neighbor)]
 
                 if n_attr.copy is None and n_attr.key > check_val:
                     n_attr.key = check_val
@@ -198,7 +198,7 @@ class Graph:
 
         while trace:
             attr = v_attrs[trace]
-            if not attr.copy: # will always be false
+            if not attr.copy: # will always be false, here just to get rid of warning
                 continue
 
             path.append(attr.copy)
@@ -206,9 +206,7 @@ class Graph:
             # if attr.parent: # copies should hash the same as original
             #     attr.copy.create_link(attr.parent, self.edges[(attr.copy, attr.parent)])
 
-        path.reverse()
-
-        return [p.value for p in path]
+        return [p.value for p in reversed(path)]
 
 
 

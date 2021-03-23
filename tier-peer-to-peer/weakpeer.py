@@ -42,11 +42,11 @@ class IndexState:
 
 class Peer:
     """ Represents a single peer node """
-    port: int
-    user: str
-    direct: Path
-    index_start: IndexInfo
-    dir_update: aio.Event
+    _port: int
+    _user: str
+    _direct: Path
+    _index_start: IndexInfo
+    _dir_update: aio.Event
 
     PROMPT = (
         "1. List all available files in system\n"
@@ -67,17 +67,17 @@ class Peer:
         Creates all the state information for a peer node, use to method
         start_server to activate the peer node
         """
-        self.port = max(1, port)
-        self.user = socket.gethostname() if user is None else user
+        self._port = max(1, port)
+        self._user = socket.gethostname() if user is None else user
 
         if directory is None:
-            self.direct = Path('.')
+            self._direct = Path('.')
         elif isinstance(directory, str):
-            self.direct = Path(f'./{directory}')
+            self._direct = Path(f'./{directory}')
         else:
-            self.direct = directory
+            self._direct = directory
 
-        self.direct.mkdir(exist_ok=True, parents=True)
+        self._direct.mkdir(exist_ok=True, parents=True)
 
         if address is None:
             in_host = socket.gethostname()
@@ -85,16 +85,16 @@ class Peer:
             in_host = socket.gethostbyaddr(address)[0]
 
         if in_port is None:
-            in_port = self.port
+            in_port = self._port
 
-        self.index_start = IndexInfo(in_host, in_port)
+        self._index_start = IndexInfo(in_host, in_port)
 
 
     def get_files(self) -> frozenset[str]:
         """ Gets all the files from the direct path attribute """
         return frozenset(
             p.name
-            for p in self.direct.iterdir()
+            for p in self._direct.iterdir()
             if p.is_file()
         )
 
@@ -104,7 +104,7 @@ class Peer:
         Connects the peer to the indexing node, and starts the peer server
         """
         # async sync state needs to be init from async context
-        self.dir_update = aio.Event()
+        self._dir_update = aio.Event()
         
         def to_upload(reader: aio.StreamReader, writer: aio.StreamWriter):
             """ Indexer closure as a stream callback """
@@ -112,16 +112,17 @@ class Peer:
 
         try:
             host = socket.gethostname()
-            server = await aio.start_server(to_upload, host, self.port, start_serving=False)
-            logging.info(f'peer server on {host}, port {self.port}')
+            server = await aio.start_server(to_upload, host, self._port, start_serving=False)
+            logging.info(f'peer server on {host}, port {self._port}')
 
             async with server:
                 if server.sockets:
-                    start = self.index_start
+                    start = self._index_start
 
                     logging.info(f'trying connection with indexer at {start}')
 
-                    fin, pend = await aio.wait({aio.open_connection(start.host, start.port)}, timeout=8)
+                    conn = aio.create_task(aio.open_connection(start.host, start.port))
+                    fin, pend = await aio.wait({conn}, timeout=8)
                     for p in pend: p.cancel()
                     if len(fin) == 0: return
 
@@ -130,11 +131,11 @@ class Peer:
 
                     indexer = IndexState(start, in_pair)
 
-                    login = Login(self.user, host, self.port)
+                    login = Login(self._user, host, self._port)
                     await Message.write(in_pair.writer, login)
 
                     # make sure that event is listening before it can be set and cleared
-                    first_update = aio.create_task(self.dir_update.wait())
+                    first_update = aio.create_task(self._dir_update.wait())
 
                     sender = aio.create_task(self._send_dir(indexer))
                     checker = aio.create_task(self._check_dir())
@@ -177,7 +178,7 @@ class Peer:
                 check = self.get_files()
                 if last_check != check:
                     last_check = check
-                    self.dir_update.set()
+                    self._dir_update.set()
 
                 await aio.sleep(5) # TODO: make interval param
 
@@ -192,11 +193,11 @@ class Peer:
         """
         try:
             while True:
-                await self.dir_update.wait()
+                await self._dir_update.wait()
                 async with indexer.access:
                     await indexer.pair.request(Request.UPDATE, files=self.get_files())
                     # should be only place where dir_update is cleared
-                    self.dir_update.clear()
+                    self._dir_update.clear()
 
         except aio.CancelledError:
             pass
@@ -234,7 +235,7 @@ class Peer:
                         await self._run_download(indexer)
 
                     else:
-                        print(f'Exiting {self.user} peer server')
+                        print(f'Exiting {self._user} peer server')
                         break
 
         except aio.CancelledError:
@@ -243,7 +244,7 @@ class Peer:
         except Exception as e:
             logging.exception(e)
 
-        logging.info(f"{self.user} session ending")
+        logging.info(f"{self._user} session ending")
 
 
 
@@ -286,7 +287,7 @@ class Peer:
         elapsed = (get_elapsed + query_elapsed) / 2
         logging.info(f"query for {picked} took {elapsed:.4f} secs")
 
-        self_loc = socket.gethostname(), self.port
+        self_loc = socket.gethostname(), self._port
         at_self = True
         target = None
 
@@ -305,7 +306,7 @@ class Peer:
         
         # use a random peer target
         await self._peer_download(picked, target)
-        self.dir_update.set()
+        self._dir_update.set()
 
 
     async def _select_file(self, fileset: Iterable[str]) -> str:
@@ -346,7 +347,7 @@ class Peer:
         log = logging.getLogger()
 
         try:
-            await Message.write(writer, self.user)
+            await Message.write(writer, self._user)
             user = await Message.read(reader, str)
 
             log = logging.getLogger(user)
@@ -372,7 +373,7 @@ class Peer:
         start_time = time()
         # reader, _ = peer
 
-        filepath = self.direct.joinpath(filename)
+        filepath = self._direct.joinpath(filename)
         exts = "".join(filepath.suffixes)
         stem = filepath.stem
 
@@ -445,7 +446,7 @@ class Peer:
 
         try:
             user = await Message.read(reader, str)
-            await Message.write(writer, self.user)
+            await Message.write(writer, self._user)
 
             log = logging.getLogger(user)
             log.debug(f"connected")
@@ -479,7 +480,7 @@ class Peer:
         """
         start_time = time()
         _, writer = peer
-        filepath = self.direct.joinpath(filename)
+        filepath = self._direct.joinpath(filename)
 
         filesize = filepath.stat().st_size
 
