@@ -348,7 +348,7 @@ class Peer:
 
         try:
             await Message.write(writer, self._user)
-            user = await Message.read(reader, str)
+            user = await Message[str].read(reader)
 
             log = logging.getLogger(user)
             log.debug("connected")
@@ -415,10 +415,10 @@ class Peer:
         amt_read = 0
 
         # expect the checksum to be sent first
-        checksum = await Message.read(reader, bytes)
+        checksum = await Message[bytes].read(reader)
 
         with open(filepath, 'w+b') as f:
-            filesize = await Message.read(reader, int)
+            filesize = await Message[int].read(reader)
 
             while amt_read < filesize:
                 # no messages since each file chunk is part of same "message"
@@ -445,13 +445,13 @@ class Peer:
         log = logging.getLogger()
 
         try:
-            user = await Message.read(reader, str)
+            user = await Message[str].read(reader)
             await Message.write(writer, self._user)
 
             log = logging.getLogger(user)
             log.debug(f"connected")
 
-            while procedure := await Message.read(reader, Procedure):
+            while procedure := await Message[Procedure].read(reader):
                 if procedure.request is Request.DOWNLOAD:
                     await procedure(self._send_file, peer, log=log)
                 else:

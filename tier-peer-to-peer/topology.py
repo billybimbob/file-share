@@ -2,29 +2,45 @@
 
 from __future__ import annotations
 
-from typing import Any, NamedTuple, Optional, TypeVar
+from typing import Generic, Optional, TypeVar, Union, Protocol
 from collections.abc import Iterable, Sequence, Mapping
 from dataclasses import dataclass
+from abc import abstractmethod
 
 from sys import maxsize
 
 
-T = TypeVar('T')
+C = TypeVar("C", bound="Comparable")
 
-class Vertex:
+class Comparable(Protocol):
+    @abstractmethod
+    def __eq__(self, x: object) -> bool:
+        pass
+
+    @abstractmethod
+    def __lt__(self: C, x: C) -> bool:
+        pass
+
+
+
+T = TypeVar('T', bound=Comparable)
+V = TypeVar('V', bound=Comparable)
+
+class Vertex(Generic[T]):
     """
     Container for a value, where all comparisons are based on the value
     """
-    value: Any
-    links: list[Link]
+    value: T
+    links: list[Link[T]]
 
-    class Link(NamedTuple):
-        vertex: Vertex
+    @dataclass(frozen=True)
+    class Link(Generic[V]):
+        vertex: Vertex[V]
         weight: int = 1
         directed: bool = False
 
 
-    def __init__(self, value: Any, *links: Link):
+    def __init__(self, value: T, *links: Link[T]):
         """
         args:
             value: any hashable value
@@ -37,18 +53,18 @@ class Vertex:
             self._link_check(link)
 
 
-    def _link_check(self, link: Link):
+    def _link_check(self, link: Link[T]):
         if not link.directed:
             link.vertex.links.append(
                 Vertex.Link(self, link.weight, link.directed)
             )
 
-    def create_link(self, vertex: Vertex, weight: int, directed: bool=False):
+    def create_link(self, vertex: Vertex[T], weight: int, directed: bool=False):
         new_link = Vertex.Link(vertex, weight, directed)
         self.add_links(new_link)
 
 
-    def add_links(self, *links: Link):
+    def add_links(self, *links: Link[T]):
         for link in links:
             self.links.append(link)
             self._link_check(link)
@@ -57,7 +73,7 @@ class Vertex:
     def neighbors(self):
         return [link.vertex for link in self.links]
 
-    def __eq__(self, other: Vertex):
+    def __eq__(self, other: Vertex[T]):
         return self.value == other.value
 
     def __hash__(self):
@@ -70,25 +86,24 @@ class Vertex:
         return str(self)
 
 
-class Graph:
+class Graph(Generic[T]):
     """ Stores a graph structure """
-    _vertices: list[Vertex]
-    _edges: dict[tuple[Vertex, Vertex], int]
+    _vertices: list[Vertex[T]]
+    _edges: dict[tuple[Vertex[T], Vertex[T]], int]
 
-    def __init__(self, *vertices: Vertex):
+
+    def __init__(self, *vertices: Vertex[T]):
         """create vertex and edge lookup table"""
         # not efficient in creating the graph, O(V*E)
-        unnested = sorted(
-            (
-                (vertex, link.vertex, link.weight)
-                for vertex in vertices
-                for link in vertex.links
-            ),
-            key=lambda tup: tup[2],
-            reverse=True
+        unnested = (
+            (vertex, link.vertex, link.weight)
+            for vertex in vertices
+            for link in vertex.links
         )
 
-        self._vertices = sorted(set(vertices), key=lambda vert: vert.value)
+        unnested = sorted(unnested, key=lambda tup: tup[2], reverse=True)
+
+        self._vertices = sorted(set(vertices), key=lambda v: v.value)
         self._edges = {
             (v1, v2): weight
             for v1, v2, weight in unnested
@@ -96,15 +111,24 @@ class Graph:
 
 
     @staticmethod
-    def from_map(map: Mapping[T, Optional[Iterable[T]]]) -> Graph:
+    def from_map(map: Mapping[T, Optional[Iterable[T]]]) -> Graph[T]:
         """ Creates a graph from a connection map """
-        vertices = {v: Vertex(v) for v in map.keys()}
+        vertices = {v: Vertex[T](v) for v in map.keys()}
         for node, neighbors in map.items():
             if neighbors:
                 links = [Vertex.Link(vertices[n]) for n in neighbors]
                 vertices[node].add_links(*links)
 
-        return Graph( *vertices.values() )
+        return Graph(*vertices.values())
+
+
+    def get_vertex(self, value: T):
+        value_map = {
+            vertex.value: vertex
+            for vertex in self._vertices
+        }
+
+        return value_map[value]
 
 
     def __str__(self):
@@ -132,7 +156,7 @@ class Graph:
         return len(self._vertices)
 
 
-    def undirected_weight(self):
+    def undirected_weight(self) -> int:
         tot_weight = 0
         for weight in self._edges.values():
             tot_weight += weight
@@ -141,18 +165,18 @@ class Graph:
 
 
     @dataclass(repr=False)
-    class MinAttrs:
+    class MinAttrs(Generic[V]):
         """ Values kept track for finding path trees """
         key: int = maxsize
-        copy: Optional[Vertex] = None
-        parent: Optional[Vertex] = None
+        copy: Optional[Vertex[V]] = None
+        parent: Optional[Vertex[V]] = None
 
         def __repr__(self):
             return f'{self.key}: {self.copy}'
 
 
     @staticmethod
-    def _min_vertices(v_attrs: dict[Vertex, Graph.MinAttrs]) -> list[Vertex]:
+    def _min_vertices(v_attrs: dict[Vertex[T], Graph.MinAttrs[T]]) -> list[Vertex[T]]:
         """ Finds the vertices with the minimum key in the graph """
         min_val = maxsize
         min_verts = list[Vertex]()
@@ -171,10 +195,16 @@ class Graph:
         return min_verts
 
 
-    def shortest_path(self, start: Vertex) -> Sequence[Any]:
+    def shortest_path(self, start_pt: Union[T, Vertex[T]]) -> Sequence[T]:
         """ Calculates a shortest path from the start vertex """
+        start: Vertex[T] = (
+            start_pt
+            if isinstance(start_pt, Vertex) else
+            self.get_vertex(start_pt)
+        )
+
         # creates a dictionary of objects based on the size of the graph
-        v_attrs = {vertex: Graph.MinAttrs() for vertex in self._vertices}
+        v_attrs = {vertex: Graph.MinAttrs[T]() for vertex in self._vertices}
         v_attrs[start].key = 0
         end = start
 
@@ -193,13 +223,13 @@ class Graph:
 
             end = vertex
 
-        path = list[Vertex]()
-        trace: Optional[Vertex] = end
+        path = list[Vertex[T]]()
+        trace: Optional[Vertex[T]] = end
 
         while trace:
             attr = v_attrs[trace]
             if not attr.copy: # will always be false, here just to get rid of warning
-                continue
+                break
 
             path.append(attr.copy)
             trace = attr.parent
@@ -211,15 +241,15 @@ class Graph:
 
 
 if __name__ == "__main__":
-    a = Vertex("a")
-    b = Vertex("b", Vertex.Link(a, 6))
-    c = Vertex("c")
-    d = Vertex('d', Vertex.Link(b, 1))
-    e = Vertex('e')
-    f = Vertex('f', Vertex.Link(a, 2), Vertex.Link(c, 6))
-    g = Vertex('g', Vertex.Link(c, 5), Vertex.Link(d, 3))
-    h = Vertex('h', Vertex.Link(d, 9), Vertex.Link(e, 8))
-    i = Vertex('i', Vertex.Link(e, 3), Vertex.Link(g, 4))
+    # a = Vertex("a")
+    # b = Vertex("b", Vertex.Link(a, 6))
+    # c = Vertex("c")
+    # d = Vertex('d', Vertex.Link(b, 1))
+    # e = Vertex('e')
+    # f = Vertex('f', Vertex.Link(a, 2), Vertex.Link(c, 6))
+    # g = Vertex('g', Vertex.Link(c, 5), Vertex.Link(d, 3))
+    # h = Vertex('h', Vertex.Link(d, 9), Vertex.Link(e, 8))
+    # i = Vertex('i', Vertex.Link(e, 3), Vertex.Link(g, 4))
 
     conns = {
         "a": None,
@@ -238,8 +268,8 @@ if __name__ == "__main__":
 
     print(f'Starting graph, weight: {graph.undirected_weight()}\n{graph}\n')
 
-    shortest_a = graph.shortest_path(h)
-    print(f'Shortest path tree starting from vertex "{h}", {shortest_a}\n')
+    shortest_a = graph.shortest_path("h")
+    print(f'Shortest path tree starting from vertex "h", {shortest_a}\n')
 
     # print("If there is no unique MST, all variations will be printed")
     # min_spans = graph.min_span()

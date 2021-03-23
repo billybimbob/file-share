@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import Any, Callable, NamedTuple, Optional, TypeVar, Union, cast
+from typing import Any, Callable, Generic, NamedTuple, Optional, TypeVar, Union, cast
 from dataclasses import dataclass
 from collections.abc import Awaitable
 
@@ -79,13 +79,13 @@ class Procedure:
 
 
 
-class Message:
+class Message(Generic[T]):
     """ Information that is passed between socket streams """
-    _payload: Any # pre-pickled data
+    _payload: T # pre-pickled data
 
     HEADER = struct.Struct("!I")
 
-    def __init__(self, payload: Any):
+    def __init__(self, payload: T):
         """
         Creates a message that can be packed; the payload should 
         not be pickled yet
@@ -94,7 +94,7 @@ class Message:
 
 
     @staticmethod
-    async def get(stream: asyncio.StreamReader) -> Message:
+    async def get(stream: asyncio.StreamReader) -> Message[T]:
         """ Gets a message from the stream reader """
         header = await stream.readexactly(Message.HEADER.size)
         size, = Message.HEADER.unpack(header)
@@ -113,7 +113,7 @@ class Message:
         return header + data
 
 
-    def unwrap(self) -> Any:
+    def unwrap(self) -> T:
         """ Return the payload or raise it as a decoded exception """
         if isinstance(self._payload, Exception):
             # potentially could have message of just random bytes
@@ -123,18 +123,18 @@ class Message:
 
 
     @staticmethod
-    async def write(writer: asyncio.StreamWriter, payload: Any):
+    async def write(writer: asyncio.StreamWriter, payload: T):
         """ Send a regular message or an exception through the stream """
-        message = Message(payload)
+        message = Message[T](payload)
         writer.write(message.pack())
         await writer.drain()
 
 
     @staticmethod
-    async def read(reader: asyncio.StreamReader, as_type: type[T]) -> T:
+    async def read(reader: asyncio.StreamReader) -> T:
         """ Get and unwrap bytes, as the expected type from the stream """
-        message = await Message.get(reader)
-        return cast(as_type, message.unwrap())
+        message = await Message[T].get(reader)
+        return message.unwrap()
 
 
 Receiver = Callable[[asyncio.StreamReader], Awaitable[T]]
@@ -168,7 +168,7 @@ class StreamPair(NamedTuple):
         if receiver:
             return await receiver(self.reader)
         elif as_type:
-            return await Message.read(self.reader, as_type)
+            return await Message[as_type].read(self.reader)
         else:
             return cast(Any, None) # kind of hacky
 

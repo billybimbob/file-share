@@ -202,7 +202,7 @@ class Indexer:
         logger = logging.getLogger()
 
         try:
-            login = await Message.read(reader, Login)
+            login = await Message[Login].read(reader)
             username, host, port = login
             loc = (host, port)
             logger = logging.getLogger(username)
@@ -237,7 +237,7 @@ class Indexer:
     async def _connect_loop(self, peer: StreamPair):
         """ Request loop handler for each peer connection """
 
-        while procedure := await Message.read(peer.reader, Procedure):
+        while procedure := await Message[Procedure].read(peer.reader):
             request = procedure.request
 
             if request is Request.GET_FILES:
