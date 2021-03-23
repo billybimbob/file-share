@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import Any, Callable, Generic, NamedTuple, Optional, TypeVar, Union, cast
+
+from typing import (
+    Any, Callable, Generic, NamedTuple, Optional, TypeVar, Union, cast
+)
 from dataclasses import dataclass
 from collections.abc import Awaitable
-
 from enum import Enum
-from io import UnsupportedOperation
 
 from pathlib import Path
 from configparser import ConfigParser
@@ -26,19 +27,16 @@ CHUNK_SIZE = 1024
 
 class Request(Enum):
     """ Request messages """
-    GET_FILES = 'get_files_list'
+    FILES = 'files_list'
     DOWNLOAD = 'download'
     UPDATE = 'update_files'
     QUERY = 'query'
+    HIT = 'hit'
 
     @staticmethod
-    def parse(poss_req: str) -> Optional[Request]:
-        request = None
-        try:
-            poss_req = poss_req.strip().upper()
-            request = Request[poss_req]
-        except (UnsupportedOperation, KeyError):
-            pass
+    def parse(poss_req: str) -> Request:
+        poss_req = poss_req.strip().upper()
+        request = Request[poss_req]
 
         return request
 
@@ -102,7 +100,7 @@ class Message(Generic[T]):
         data = await stream.readexactly(size)
         payload = pickle.loads(data)
 
-        return Message(payload)
+        return Message[T](payload)
 
 
     def pack(self) -> bytes:
@@ -123,9 +121,9 @@ class Message(Generic[T]):
 
 
     @staticmethod
-    async def write(writer: asyncio.StreamWriter, payload: T):
+    async def write(writer: asyncio.StreamWriter, payload: Any):
         """ Send a regular message or an exception through the stream """
-        message = Message[T](payload)
+        message = Message(payload)
         writer.write(message.pack())
         await writer.drain()
 

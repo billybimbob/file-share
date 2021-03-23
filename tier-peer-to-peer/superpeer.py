@@ -11,8 +11,9 @@ import asyncio as aio
 import socket
 import logging
 
+from topology import Graph
 from connection import (
-    Procedure, StreamPair, Message, Request, Login,
+    Procedure, Query, StreamPair, Message, Request, Login,
     ainput, getpeerbystream, merge_config_args, version_check
 )
 
@@ -26,11 +27,35 @@ class PeerState:
     signal: aio.Event = field(default_factory=aio.Event)
     log: logging.Logger = field(default_factory=logging.getLogger)
 
+    queries: set[Query] = field(default_factory=set)
+
 
 class PeerUpdate(NamedTuple):
     """ Pending changes to update the a given peer's state """
     peer: StreamPair
     args: Optional[dict[str, Any]] = None
+
+
+class SuperPeer:
+    _port: int
+    _min_supers: Graph[str]
+    _supers: set[StreamPair]
+    _weaks: dict[StreamPair, PeerState]
+    _updates: aio.PriorityQueue[tuple[int, PeerUpdate]]
+
+    DELETE_PRIORITY = 1
+    UPDATE_PRIORITY = 2
+
+    def __init__(self, port: int) -> None:
+        pass
+
+    async def _weak_connection(self, conn: StreamPair):
+        """ Connection with a weak peer """
+        pass
+
+    async def _strong_connection(self, conn: StreamPair):
+        """ Connection with another strong peer """
+        pass
 
 
 class Indexer:
@@ -138,6 +163,8 @@ class Indexer:
                 else:
                     logging.error(f'got unknown priority or update missing args')
 
+                self._updates.task_done()
+
         except aio.CancelledError:
             pass
 
@@ -153,7 +180,6 @@ class Indexer:
         peer_state.files.update(files)
 
         self._peers[peer].log.debug("got updated files")
-        self._updates.task_done()
         peer_state.signal.set()
 
     
@@ -161,8 +187,6 @@ class Indexer:
         """ Removes a peer entry, should only be called after peer ends connection """
         if peer in self._peers:
             del self._peers[peer]
-        
-        self._updates.task_done()
     
 
     #endregion
@@ -240,7 +264,7 @@ class Indexer:
         while procedure := await Message[Procedure].read(peer.reader):
             request = procedure.request
 
-            if request is Request.GET_FILES:
+            if request is Request.FILES:
                 await procedure(self._send_files, peer)
 
             elif request is Request.UPDATE:

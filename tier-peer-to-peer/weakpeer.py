@@ -250,7 +250,7 @@ class Peer:
 
     async def _system_files(self, indexer: IndexState) -> list[str]:
         """ Fetches all the files in the system based on indexer """
-        files: frozenset[str] = await indexer.pair.request(Request.GET_FILES, as_type=frozenset)
+        files = await indexer.pair.request(Request.FILES, as_type=frozenset[str])
         return sorted(files)
 
     
@@ -277,10 +277,10 @@ class Peer:
 
         # query for loc
         start_time = time()
-        peers: set[tuple[str, int]] = await indexer.pair.request(
+        peers = await indexer.pair.request(
             Request.QUERY,
             filename=picked,
-            as_type=set
+            as_type=set[tuple[str, int]]
         )
 
         query_elapsed = time() - start_time

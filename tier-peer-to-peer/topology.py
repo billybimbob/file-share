@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Generic, Optional, TypeVar, Union, Protocol
-from collections.abc import Iterable, Sequence, Mapping
+from typing import Generic, Optional, TypeVar, Protocol, Union
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from abc import abstractmethod
 
-from sys import maxsize
+from pathlib import Path
+import sys
+import json
 
 
 C = TypeVar("C", bound="Comparable")
@@ -122,13 +124,47 @@ class Graph(Generic[T]):
         return Graph(*vertices.values())
 
 
+    @staticmethod
+    def from_json(map_path: Union[Path, str]) -> Graph[str]:
+        """
+        Tries to parse the json file as a graph; the expected json structure 
+        is a single object where each key is a vertex value, and each value 
+        is an array of adjacent vertex values; graphs are restricted to str
+        types because of json restrictions
+        """
+        if isinstance(map_path, str):
+            map_path = Path(map_path)
+        
+        map_path = map_path.with_suffix('.json')
+        with open(map_path) as f:
+            # potential type errors
+            map = json.load(f)
+            return Graph.from_map(map)
+
+
+    def has_connection(self, a: T, b: T) -> bool:
+        va = self.get_vertex(a)
+        vb = self.get_vertex(b)
+        return (va, vb) in self._edges
+
+
     def get_vertex(self, value: T):
+        """ Gets the vertex associated with the value """
         value_map = {
             vertex.value: vertex
             for vertex in self._vertices
         }
 
         return value_map[value]
+
+
+    def undirected_weight(self) -> int:
+        """ Total weight of the graph, assuming each edge is undirected """
+        tot_weight = 0
+        for weight in self._edges.values():
+            tot_weight += weight
+
+        return int(tot_weight/2)
 
 
     def __str__(self):
@@ -156,18 +192,10 @@ class Graph(Generic[T]):
         return len(self._vertices)
 
 
-    def undirected_weight(self) -> int:
-        tot_weight = 0
-        for weight in self._edges.values():
-            tot_weight += weight
-
-        return int(tot_weight/2)
-
-
     @dataclass(repr=False)
     class MinAttrs(Generic[V]):
         """ Values kept track for finding path trees """
-        key: int = maxsize
+        key: int = sys.maxsize
         copy: Optional[Vertex[V]] = None
         parent: Optional[Vertex[V]] = None
 
@@ -178,7 +206,7 @@ class Graph(Generic[T]):
     @staticmethod
     def _min_vertices(v_attrs: dict[Vertex[T], Graph.MinAttrs[T]]) -> list[Vertex[T]]:
         """ Finds the vertices with the minimum key in the graph """
-        min_val = maxsize
+        min_val = sys.maxsize
         min_verts = list[Vertex]()
 
         for vertex, attrs in v_attrs.items():
@@ -195,48 +223,40 @@ class Graph(Generic[T]):
         return min_verts
 
 
-    def shortest_path(self, start_pt: Union[T, Vertex[T]]) -> Sequence[T]:
-        """ Calculates a shortest path from the start vertex """
-        start: Vertex[T] = (
-            start_pt
-            if isinstance(start_pt, Vertex) else
-            self.get_vertex(start_pt)
-        )
+    def min_span(self) -> Graph[T]:
+        """ A new graph that is a minimum span; which helps simplify graph traversal """
+        start = self._vertices[0] # will be a random starting point
 
         # creates a dictionary of objects based on the size of the graph
         v_attrs = {vertex: Graph.MinAttrs[T]() for vertex in self._vertices}
         v_attrs[start].key = 0
-        end = start
 
         # guaranteed to have at least one vertex
         while vertex := Graph._min_vertices(v_attrs):
             vertex = vertex[0] # just get first result and ignore other options
-            v_attrs[vertex].copy = vertex
+
+            v_attr = v_attrs[vertex]
+            v_attr.copy = Vertex(vertex.value)
 
             for neighbor in vertex.neighbors(): # updates adjacent vals
                 n_attr = v_attrs[neighbor]
-                check_val = v_attrs[vertex].key + self._edges[(vertex, neighbor)]
+                check_val = self._edges[(vertex, neighbor)]
 
                 if n_attr.copy is None and n_attr.key > check_val:
                     n_attr.key = check_val
-                    n_attr.parent = v_attrs[vertex].copy
+                    n_attr.parent = v_attr.copy
 
-            end = vertex
+        new_verts = list[Vertex[T]]()
 
-        path = list[Vertex[T]]()
-        trace: Optional[Vertex[T]] = end
-
-        while trace:
-            attr = v_attrs[trace]
+        for attr in v_attrs.values():
             if not attr.copy: # will always be false, here just to get rid of warning
-                break
+                continue
 
-            path.append(attr.copy)
-            trace = attr.parent
-            # if attr.parent: # copies should hash the same as original
-            #     attr.copy.create_link(attr.parent, self.edges[(attr.copy, attr.parent)])
+            new_verts.append(attr.copy)
+            if attr.parent: # copies should hash the same as original
+                attr.copy.create_link(attr.parent, self._edges[(attr.copy, attr.parent)])
 
-        return [p.value for p in reversed(path)]
+        return Graph(*new_verts)
 
 
 
@@ -251,27 +271,24 @@ if __name__ == "__main__":
     # h = Vertex('h', Vertex.Link(d, 9), Vertex.Link(e, 8))
     # i = Vertex('i', Vertex.Link(e, 3), Vertex.Link(g, 4))
 
-    conns = {
-        "a": None,
-        "b": {"a"},
-        "c": None,
-        "d": {"b"},
-        "e": None,
-        "f": {"a", "c"},
-        "g": {"c", "d"},
-        "h": {"d", "e"},
-        "i": {"e", "g"}
-    }
+    # conns = {
+    #     "a": None,
+    #     "b": {"a"},
+    #     "c": None,
+    #     "d": {"b"},
+    #     "e": None,
+    #     "f": {"a", "c"},
+    #     "g": {"c", "d"},
+    #     "h": {"d", "e"},
+    #     "i": {"e", "g"}
+    # }
 
     # graph = Graph(a, b, c, d, e, f, g, h, i)
-    graph = Graph.from_map(conns)
+    # graph = Graph.from_map(conns)
+    graph = Graph.from_json('topology/test')
 
     print(f'Starting graph, weight: {graph.undirected_weight()}\n{graph}\n')
 
-    shortest_a = graph.shortest_path("h")
-    print(f'Shortest path tree starting from vertex "h", {shortest_a}\n')
+    span = graph.min_span()
 
-    # print("If there is no unique MST, all variations will be printed")
-    # min_spans = graph.min_span()
-    # for min_span in min_spans:
-    #     print(f'Minimum span tree, weight: {min_span.undirected_weight()}\n{min_span}\n')
+    print(f'Minimum span tree, weight: {span.undirected_weight()}\n{span}\n')
