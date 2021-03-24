@@ -53,7 +53,7 @@ class Procedure:
 
     def __call__(
         self,
-        funct: Callable[..., T],
+        func: Callable[..., T],
         *args: Any,
         self_first: bool = False,
         **kwargs: Any) -> T:
@@ -73,7 +73,7 @@ class Procedure:
             kwargs | self._kwargs
         )
 
-        return funct(*pos_args, **key_args)
+        return func(*pos_args, **key_args)
 
 
 
@@ -184,19 +184,21 @@ class Login(NamedTuple):
 
 class Query(NamedTuple):
     """ 
-    Information broadcasted to super peers for either file location or
-    file list queries
+    Information broadcasted to super peers for a file location
     """
     id: str
-    alive_time: Optional[int]
-    filename: Optional[str]
+    filename: str
+    alive_time: float
+
+    def elapsed(self, time_change: float) -> Query:
+        """ Creates an updated query, with the alive_time updated """
+        return Query(self.id, self.filename, self.alive_time - time_change)
 
 
 class QueryHit(NamedTuple):
-    """ Response to a location or list query """
+    """ Response to a location query """
     id: str
-    location: Optional[tuple[str, int]]
-    filelist: list[str]
+    location: frozenset[tuple[str, int]]
 
 #endregion
 
