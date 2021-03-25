@@ -225,7 +225,7 @@ async def ainput(prompt: str='') -> str:
 #     return namedtuple('obj', map.keys())(*map.values())
 
 
-def read_config(filename: str) -> dict[str, Any]:
+def read_main_config(filename: str) -> dict[str, Union[str, int]]:
     """ Parse an ini file into a dictionary, ignoring sections """
     if not Path(filename).exists():
         raise IOError("Config file does not exist")
@@ -233,12 +233,12 @@ def read_config(filename: str) -> dict[str, Any]:
     conf = ConfigParser()
     conf.read(filename)
 
-    args: dict[str, Any] = {}
-    for section in conf.sections():
-        for arg in conf[section]:
-            args[arg] = conf[section][arg]
-            if args[arg].isnumeric():
-                args[arg] = int(args[arg])
+    args = dict[str, Union[str, int]]()
+
+    main = conf['main']
+    for arg in main:
+        val = main[arg]
+        args[arg] = int(val) if val.isnumeric() else val
 
     return args
 
@@ -249,7 +249,7 @@ def merge_config_args(args: Namespace) -> dict[str, Any]:
         return vars(args)
     else:
         # config overrides command args
-        merged_args = vars(args) | read_config(args.config)
+        merged_args = vars(args) | read_main_config(args.config)
         return merged_args
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import NamedTuple, Optional, Union
+from typing import Optional, Union
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
@@ -23,18 +23,12 @@ from connection import (
 )
 
 
-class IndexInfo(NamedTuple):
-    """ Information to connect to the index node """
-    host: str
-    port: int
-
-
 @dataclass(frozen=True)
 class IndexState:
     """
     All variable and constant information about the indexer connection
     """
-    info: IndexInfo
+    info: tuple[str, int]
     pair: StreamPair
     access: aio.Lock = field(default_factory=aio.Lock)
 
@@ -45,7 +39,7 @@ class Peer:
     _port: int
     _user: str
     _direct: Path
-    _index_start: IndexInfo
+    _index_start: tuple[str, int]
     _dir_update: aio.Event
 
     PROMPT = (
@@ -87,7 +81,7 @@ class Peer:
         if in_port is None:
             in_port = self._port
 
-        self._index_start = IndexInfo(in_host, in_port)
+        self._index_start = (in_host, in_port)
 
 
     def get_files(self) -> frozenset[str]:
@@ -119,10 +113,7 @@ class Peer:
                 if not server.sockets:
                     return 
 
-                super_peer = await self._super_connect()
-
-                login = Login(self._user, host, self._port)
-                await Message.write(super_peer.pair.writer, login)
+                super_peer = await self._connect_super(host)
 
                 # make sure that event is listening before it can be set and cleared
                 first_update = aio.create_task(self._dir_update.wait())
@@ -157,12 +148,12 @@ class Peer:
         logging.debug("ending peer")
 
 
-    async def _super_connect(self) -> IndexState:
+    async def _connect_super(self, host: str) -> IndexState:
         start = self._index_start
 
         logging.info(f'trying connection with indexer at {start}')
 
-        conn = aio.create_task(aio.open_connection(start.host, start.port))
+        conn = aio.create_task(aio.open_connection(*start))
         fin, pend = await aio.wait({conn}, timeout=8)
         for p in pend: p.cancel()
 
@@ -171,6 +162,9 @@ class Peer:
 
         in_pair = fin.pop().result()
         in_pair = StreamPair(*in_pair)
+
+        login = Login(self._user, host, self._port)
+        await Message.write(in_pair.writer, login)
 
         return IndexState(start, in_pair)
 

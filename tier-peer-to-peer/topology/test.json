@@ -1,11 +1,23 @@
-{
-    "a": ["b", "f"],
-    "b": ["a", "b"],
-    "c": ["f", "g"],
-    "d": ["b", "g", "h"],
-    "e": ["h", "i"],
-    "f": ["a", "c"],
-    "g": ["c", "d"],
-    "h": ["d", "e"],
-    "i": ["e", "g"]
-}
+[
+    {
+        "host": null,
+        "port": 8888,
+        "neighbors": [1, 4]
+    }, {
+        "host": null,
+        "port": 8889,
+        "neighbors": [2, 3]
+    }, {
+        "host": null,
+        "port": 8890,
+        "neighbors": null
+    }, {
+        "host": null,
+        "port": 8891,
+        "neighbors": [2]
+    }, {
+        "host": null,
+        "port": 8892,
+        "neighbors": [2, 3]
+    }
+]

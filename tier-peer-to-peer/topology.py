@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Generic, Optional, TypeVar, Protocol, Union
+from typing import Generic, Optional, TypeVar, Protocol
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from abc import abstractmethod
 
-from pathlib import Path
 import sys
-import json
 
 
 C = TypeVar("C", bound="Comparable")
@@ -125,25 +123,8 @@ class Graph(Generic[T]):
         return Graph(*vertices.values())
 
 
-    @staticmethod
-    def from_json(map_path: Union[Path, str]) -> Graph[str]:
-        """
-        Tries to parse the json file as a graph; the expected json structure 
-        is a single object where each key is a vertex value, and each value 
-        is an array of adjacent vertex values; graphs are restricted to str
-        types because of json restrictions
-        """
-        if isinstance(map_path, str):
-            map_path = Path(map_path)
-        
-        map_path = map_path.with_suffix('.json')
-        with open(map_path) as f:
-            # potential type errors
-            map = json.load(f)
-            return Graph.from_map(map)
-
-
     def has_connection(self, a: T, b: T) -> bool:
+        """ True if an edge exists in the graph """
         va = self.get_vertex(a)
         vb = self.get_vertex(b)
         return (va, vb) in self._edges
@@ -272,21 +253,20 @@ if __name__ == "__main__":
     # h = Vertex('h', Vertex.Link(d, 9), Vertex.Link(e, 8))
     # i = Vertex('i', Vertex.Link(e, 3), Vertex.Link(g, 4))
 
-    # conns = {
-    #     "a": None,
-    #     "b": {"a"},
-    #     "c": None,
-    #     "d": {"b"},
-    #     "e": None,
-    #     "f": {"a", "c"},
-    #     "g": {"c", "d"},
-    #     "h": {"d", "e"},
-    #     "i": {"e", "g"}
-    # }
+    conns = {
+        "a": None,
+        "b": {"a"},
+        "c": None,
+        "d": {"b"},
+        "e": None,
+        "f": {"a", "c"},
+        "g": {"c", "d"},
+        "h": {"d", "e"},
+        "i": {"e", "g"}
+    }
 
     # graph = Graph(a, b, c, d, e, f, g, h, i)
-    # graph = Graph.from_map(conns)
-    graph = Graph.from_json('topology/test')
+    graph = Graph.from_map(conns)
 
     print(f'Starting graph, weight: {graph.undirected_weight()}\n{graph}\n')
 

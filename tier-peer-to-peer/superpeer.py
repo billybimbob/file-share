@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from time import time
-from typing import Any, Optional, TypedDict
+from typing import Any, Optional, TypedDict, Union
 from dataclasses import dataclass, field
 
 from argparse import ArgumentParser
@@ -10,11 +10,12 @@ from pathlib import Path
 
 import asyncio as aio
 import socket
+import json
 import logging
 
 from topology import Graph
 from connection import (
-    Procedure, Query, QueryHit, StreamPair, Message, Request, Login,
+    Message, Request, Login, Procedure, Query, QueryHit, StreamPair,
     ainput, getpeerbystream, merge_config_args, version_check
 )
 
@@ -24,20 +25,33 @@ from connection import (
 class WeakState:
     """ Weak peer connection state """
     loc: tuple[str,int]
+    sender: StreamPair
     files: set[str] = field(default_factory=set)
     log: logging.Logger = field(default_factory=logging.getLogger)
 
 
-@dataclass
+@dataclass(init=False)
 class SuperState:
     """ Strong peer connection state """
-    receiver: Optional[StreamPair] = None
-    sender: Optional[StreamPair] = None
+    loc: tuple[str,int]
+    neighbors: list[int]
+    receiver: Optional[StreamPair]
+    sender: Optional[StreamPair]
+    log: logging.Logger
+
+    def __init__(self, host: str, port: int, neighbors: list[int]):
+        self.loc = (host, port)
+        self.neighbors = neighbors
+
+        self.receiver = None
+        self.sender = None
+
+        self.log = default_logger(logging.getLogger())
 
 
 class RequestCall:
     """ Pending changes to update the a given peer's state """
-    _conn: StreamPair
+    conn: StreamPair
     _args: Args
 
     class Args(TypedDict):
@@ -54,20 +68,16 @@ class RequestCall:
 
 class SuperPeer:
     """ Super peer node """
-    _id: str
     _port: int
 
     _supers: dict[str, SuperState]
     _min_supers: Graph[str]
 
-    _weaks: dict[StreamPair, WeakState]
+    _weaks: dict[str, WeakState]
     _remote_files: dict[StreamPair, frozenset[str]]
 
     _queries: dict[str, StreamPair]
     _requests: aio.Queue[RequestCall]
-
-    # WEAK_PRIORITY = 1
-    # STRONG_PRIORITY = 2
 
     PROMPT = (
         "1. List active weak peers\n"
@@ -77,22 +87,49 @@ class SuperPeer:
         "Select an Option: ")
 
 
-    def __init__(self, id: str, port: int, super_graph: Graph[str]):
+    def __init__(self, port: int, supers: list[SuperState]):
         """
         Create the state structures for a strong peer node; to start running the server, 
         run the function start_server
         """
-        self._id = id
         self._port = max(1, port)
-        self._min_supers = super_graph.min_span()
 
-        self._weaks = dict()
+        super_ids = [SuperPeer.id(state) for state in supers]
+        for id, s in zip(super_ids, supers):
+            s.log = default_logger(logging.getLogger(id))
+
+        self_id = SuperPeer.id(self)
+        self_state = [
+            state
+            for id, state in zip(super_ids, supers)
+            if id == self_id
+        ].pop()
+
         self._queries = dict()
+        self._weaks = dict()
         self._supers = {
-            neighbor.value: SuperState()
-            for neighbor in super_graph.get_vertex(id).neighbors()
+            super_ids[n]: supers[n]
+            for n in self_state.neighbors
         }
 
+        super_map = {
+            id: [super_ids[n] for n in state.neighbors]
+            for id, state in zip(super_ids, supers)
+        }
+
+        self._min_supers = Graph.from_map(super_map).min_span()
+
+
+    @staticmethod
+    def id(super: Union[SuperPeer, SuperState]) -> str:
+        """ Unique identifier for a super peer """
+        if isinstance(super, SuperPeer):
+            return f'{socket.gethostname()}:{super._port}'
+        else:
+            return f'{super.loc[0]}:{super.loc[1]}'
+
+
+    #region getters
 
     def get_files(self) -> frozenset[str]:
         """ Gets all the unique files accross all peers """
@@ -120,6 +157,32 @@ class SuperPeer:
         )
 
         return locs
+
+
+    def get_forward_targets(self, src: StreamPair) -> list[StreamPair]:
+        """
+        Gets all neighboring super peer connections excluding the
+        source neighbor and ones not in the min span 
+        """
+        self_id = SuperPeer.id(self)
+        return [
+            st.sender
+            for id, st in self._supers.items()
+            if (st.sender # should not be none at this point
+                and self._min_supers.has_connection(self_id, id)
+                and st.sender != src)
+        ]
+
+
+    def get_sender(self, login: Login) -> StreamPair:
+        """ Gets the sender assciated with the super login """
+        state = self._supers[login.id]
+        if state.sender is None:
+            raise aio.InvalidStateError('sender is not init')
+
+        return state.sender
+
+    #endregion
 
 
     async def start_server(self):
@@ -156,6 +219,8 @@ class SuperPeer:
                 caller = aio.create_task(self._request_caller())
 
                 await server.start_serving()
+                # make sure to serve before connects, else will be deadlocks
+                await self._connect_supers(host)
                 await self._session()
 
                 caller.cancel()
@@ -171,8 +236,26 @@ class SuperPeer:
             logging.info("index server stopped")
 
 
-    async def _super_connects(self):
-        pass
+    async def _connect_supers(self, host: str):
+        """ Connects to all specified super peers """
+        async def connect_task(sup: SuperState):
+            info = sup.loc
+            conn = aio.create_task(aio.open_connection(*info))
+            fin, pend = await aio.wait({conn}, timeout=8)
+
+            for p in pend: p.cancel()
+            if len(fin) == 0:
+                raise aio.TimeoutError("Connection could not be established")
+
+            pair = fin.pop().result()
+            pair = StreamPair(*pair)
+
+            login = Login(SuperPeer.id(self), host, self._port)
+            await Message.write(pair.writer, login)
+
+            sup.sender = pair
+
+        await aio.gather(*[connect_task(sup) for sup in self._supers.values()])
 
 
     async def _session(self):
@@ -180,12 +263,9 @@ class SuperPeer:
         while option := await ainput(SuperPeer.PROMPT):
             if option == '1':
                 peer_users = '\n'.join(
-                    str(peer)
-                    for peer in (
-                        getpeerbystream(pair)
-                        for pair in self._weaks.keys()
-                        if not pair.writer.is_closing())
-                    if peer is not None
+                    str( getpeerbystream(s.sender) )
+                    for s in self._weaks.values()
+                    if not s.sender.writer.is_closing()
                 )
                 print('The peers connected are: ')
                 print(f'{peer_users}\n')
@@ -204,38 +284,65 @@ class SuperPeer:
         print('Exiting server')
 
 
+
     async def _request_caller(self):
         """ Handles sending all requests to specified targets"""
+        used_conns = set[StreamPair]()
+        usage_check = aio.Condition()
+
         async def request_task(req_call: RequestCall):
-            await req_call()
-            self._requests.task_done()
+            """
+            Execute requests while making sure concurrent stream access does
+            not occur
+            """
+            try:
+                conn = req_call.conn
+                async with usage_check:
+                    while conn not in used_conns:
+                        await usage_check.wait()
+
+                    used_conns.add(conn)
+
+                await req_call()
+
+                async with usage_check:
+                    used_conns.remove(conn)
+                    usage_check.notify_all()
+
+                self._requests.task_done()
+
+            except aio.CancelledError:
+                pass
+
+        requests = set[aio.Task[None]]()
 
         try:
             while True:
+                completed = { req for req in requests if req.done() }
+                # might be expensive
+                if completed:
+                    requests -= completed
+
                 req_call = await self._requests.get()
-                 # keep eye on if need locking
-                aio.create_task(request_task(req_call))
+                requests.add(
+                    aio.create_task(request_task(req_call))
+                )
 
         except aio.CancelledError:
-            pass
+            for req in requests: req.cancel()
 
+
+    #region receivers
 
     async def _super_receiver(self, login: Login, conn: StreamPair):
         """ Server-side connection with another strong peer """
         reader, writer = conn
-        logger = logging.getLogger()
-        writer.write_eof() # do not use server for writing
+        logger = self._supers[login.id].log
 
         async def query(query: Query):
             """ Actions for strong query requests """
             start = time()
-
-            state = self._supers[login.id]
-            if state.sender is None:
-                logger.error('sender is not init')
-                return
-
-            self._queries[query.id] = state.sender
+            self._queries[query.id] = self.get_sender(login)
             await self._local_query(query)
 
             elapsed = time() - start
@@ -257,10 +364,14 @@ class SuperPeer:
 
         async def update(files: frozenset[str]):
             """ Actions for super update requests """
+            sender = self.get_sender(login)
             self._remote_files[conn] = files
-            await self._forward_update(conn, files)
+            await self._forward_update(sender, files)
 
         try:
+            writer.write_eof() # do not use server for writing
+            self._supers[login.id].receiver = conn
+
             while procedure := await Message[Procedure].read(reader):
                 request = procedure.request
 
@@ -278,11 +389,11 @@ class SuperPeer:
 
         except Exception as e:
             logger.exception(e)
-            await Message.write(writer, e)
 
         finally:
             logger.debug('ending connection')
             writer.close()
+            del self._supers[login.id]
             await writer.wait_closed() # delete super state
 
 
@@ -290,7 +401,7 @@ class SuperPeer:
     async def _weak_receiver(self, login: Login, conn: StreamPair):
         """ Server-side connection with a weak peer """
         reader, writer = conn
-        logger = logging.getLogger()
+        logger = default_logger(logging.getLogger(login.id))
 
         async def query(filename: str):
             """ Actions for weak query requests """
@@ -308,12 +419,15 @@ class SuperPeer:
 
         async def update(files: frozenset[str]):
             """ Actions for weak update requests """
-            weak = self._weaks[conn]
+            weak = self._weaks[login.id]
             weak.files.clear()
             weak.files.update(files)
             await self._forward_update(conn, files)
 
         try:
+            loc = (login.host, login.port)
+            self._weaks[login.id] = WeakState(loc, conn, log=logger)
+
             while procedure := await Message[Procedure].read(reader):
                 request = procedure.request
 
@@ -324,6 +438,9 @@ class SuperPeer:
                 else:
                     raise ValueError('Did not get an expected request')
 
+        except aio.IncompleteReadError:
+            pass
+
         except Exception as e:
             logger.exception(e)
             await Message.write(writer, e)
@@ -331,6 +448,7 @@ class SuperPeer:
         finally:
             logger.debug('ending connection')
             writer.close()
+            del self._weaks[login.id]
             await writer.wait_closed() # delete super state
 
 
@@ -357,31 +475,38 @@ class SuperPeer:
 
 
     async def _forward_query(self, query: Query):
-        src = self._queries[query.id]
-        for id, st in self._supers.items():
-            if (st.sender is None
-                or not self._min_supers.has_connection(self._id, id)
-                or src == st.receiver):
-                continue
+        """
+        Passes along a received query to all neighboring supers, if they are
+        in the min span
+        """
+        def query_request(sender: StreamPair):
+            return self._requests.put(
+                RequestCall(Request.QUERY, sender, query=query))
 
-            await self._requests.put(
-                RequestCall(Request.QUERY, st.sender, query=query)
-            )
+        src = self._queries[query.id]
+        await aio.gather(*[
+            query_request(sender)
+            for sender in self.get_forward_targets(src)
+        ])
 
 
     async def _forward_update(self, src: StreamPair, files: frozenset[str]):
-        for id, st in self._supers.items():
-            if (st.sender is None
-                or not self._min_supers.has_connection(self._id, id)
-                or st.receiver == src):
-                continue
+        """
+        Passes along a received update to all neighboring supers, if they are
+        in the min span
+        """
+        def update_request(sender: StreamPair):
+            return self._requests.put(
+                RequestCall(Request.UPDATE, sender, files=files))
 
-            await self._requests.put(
-                RequestCall(Request.UPDATE, st.sender, files=files)
-            )
+        await aio.gather(*[
+            update_request(sender)
+            for sender in self.get_forward_targets(src)
+        ])
+
+    #endregion
 
 
-    #region peer connection
 
     # async def _peer_connected(self, peer: StreamPair):
     #     """ A connection with a specific peer """
@@ -446,6 +571,21 @@ class SuperPeer:
 
     #endregion
 
+
+def parse_json(path: Union[Path, str]) -> list[SuperState]:
+    """
+    Read a json file as starting super states; the expected format
+    is as an array of objects, where each object has a host, port,
+    and neighbors attribute
+    """
+    if isinstance(path, str):
+        path = Path(path)
+    
+    path = path.with_suffix('.json')
+    with open(path) as f:
+        # potential type errors
+        items: list[dict[str, Any]] = json.load(f)
+        return [SuperState(**item) for item in items]
 
 
 def init_log(log: str, **_):
