@@ -173,9 +173,10 @@ class StreamPair(NamedTuple):
 
 class Login(NamedTuple):
     """ Initial peer identification """
-    user: str
+    id: str
     host: str
     port: int
+    is_super: bool = False
 
 #endregion
 
@@ -203,20 +204,13 @@ class QueryHit(NamedTuple):
 #endregion
 
 
-def getpeerbystream(stream: Union[StreamPair, asyncio.StreamWriter]) -> Optional[tuple[str, int]]:
+def getpeerbystream(stream: Union[StreamPair, asyncio.StreamWriter]) -> tuple[str, int]:
     """ Adds type checks to get_extra_info method for Transport """
     if isinstance(stream, StreamPair):
         stream = stream.writer
 
     poss_info = stream.get_extra_info('peername')
-
-    if (poss_info is not None
-        and len(poss_info) >= 2
-        and isinstance(poss_info[0], str)
-        and isinstance(poss_info[1], int)):
-        return poss_info[:2]
-    else:
-        return None
+    return poss_info[:2]
 
 
 async def ainput(prompt: str='') -> str:

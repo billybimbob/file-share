@@ -116,45 +116,35 @@ class Peer:
             logging.info(f'peer server on {host}, port {self._port}')
 
             async with server:
-                if server.sockets:
-                    start = self._index_start
+                if not server.sockets:
+                    return 
 
-                    logging.info(f'trying connection with indexer at {start}')
+                super_peer = await self._super_connect()
 
-                    conn = aio.create_task(aio.open_connection(start.host, start.port))
-                    fin, pend = await aio.wait({conn}, timeout=8)
-                    for p in pend: p.cancel()
-                    if len(fin) == 0: return
+                login = Login(self._user, host, self._port)
+                await Message.write(super_peer.pair.writer, login)
 
-                    in_pair = fin.pop().result()
-                    in_pair = StreamPair(*in_pair)
+                # make sure that event is listening before it can be set and cleared
+                first_update = aio.create_task(self._dir_update.wait())
 
-                    indexer = IndexState(start, in_pair)
+                sender = aio.create_task(self._send_dir(super_peer))
+                checker = aio.create_task(self._check_dir())
 
-                    login = Login(self._user, host, self._port)
-                    await Message.write(in_pair.writer, login)
+                # only accept connections and user input after a dir_update
+                # should not deadlock, keep eye on
+                await first_update
+                await server.start_serving()
 
-                    # make sure that event is listening before it can be set and cleared
-                    first_update = aio.create_task(self._dir_update.wait())
+                session = aio.create_task(self._session(super_peer))
+                conn = aio.create_task(self._watch_connection(super_peer))
 
-                    sender = aio.create_task(self._send_dir(indexer))
-                    checker = aio.create_task(self._check_dir())
+                await aio.wait([session, conn], return_when=aio.FIRST_COMPLETED)
 
-                    # only accept connections and user input after a dir_update
-                    # should not deadlock, keep eye on
-                    await first_update
-                    await server.start_serving()
+                checker.cancel()
+                sender.cancel()
 
-                    session = aio.create_task(self._session(indexer))
-                    conn = aio.create_task(self._watch_connection(indexer))
-
-                    await aio.wait([session, conn], return_when=aio.FIRST_COMPLETED)
-
-                    checker.cancel()
-                    sender.cancel()
-
-                    if not session.done(): session.cancel()
-                    if not conn.done(): conn.cancel()
+                if not session.done(): session.cancel()
+                if not conn.done(): conn.cancel()
 
             await server.wait_closed()
 
@@ -166,6 +156,23 @@ class Peer:
         logging.debug("disconnected from indexing server")
         logging.debug("ending peer")
 
+
+    async def _super_connect(self) -> IndexState:
+        start = self._index_start
+
+        logging.info(f'trying connection with indexer at {start}')
+
+        conn = aio.create_task(aio.open_connection(start.host, start.port))
+        fin, pend = await aio.wait({conn}, timeout=8)
+        for p in pend: p.cancel()
+
+        if len(fin) == 0:
+            raise aio.TimeoutError("Connection took to long")
+
+        in_pair = fin.pop().result()
+        in_pair = StreamPair(*in_pair)
+
+        return IndexState(start, in_pair)
 
 
     async def _check_dir(self):

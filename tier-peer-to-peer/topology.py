@@ -47,7 +47,8 @@ class Vertex(Generic[T]):
         args:
             value: any hashable value
             links: a list of Links
-        the passed in vertex will have its neighbors value updated as well if undirected
+        The passed in vertex will have its neighbors value updated as well 
+        if undirected
         """
         self.value = value
         self.links = list(links)
@@ -115,7 +116,7 @@ class Graph(Generic[T]):
     @staticmethod
     def from_map(map: Mapping[T, Optional[Iterable[T]]]) -> Graph[T]:
         """ Creates a graph from a connection map """
-        vertices = {v: Vertex[T](v) for v in map.keys()}
+        vertices = {v: Vertex(v) for v in map.keys()}
         for node, neighbors in map.items():
             if neighbors:
                 links = [Vertex.Link(vertices[n]) for n in neighbors]
