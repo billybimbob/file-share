@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Generic, Optional, TypeVar, Protocol
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
-from abc import abstractmethod
-
 import sys
+
+from abc import abstractmethod
+from collections.abc import Iterable, Mapping
+
+from dataclasses import dataclass
+from typing import Generic, Optional, Protocol, TypeVar
 
 
 C = TypeVar("C", bound="Comparable")
@@ -30,8 +31,8 @@ class Vertex(Generic[T]):
     """
     Container for a value, where all comparisons are based on the value
     """
-    value: T
-    links: list[Link[T]]
+    _value: T
+    _links: list[Link[T]]
 
     @dataclass(frozen=True)
     class Link(Generic[V]):
@@ -48,15 +49,24 @@ class Vertex(Generic[T]):
         The passed in vertex will have its neighbors value updated as well 
         if undirected
         """
-        self.value = value
-        self.links = list(links)
+        self._value = value
+        self._links = list(links)
         for link in links:
             self._link_check(link)
+
+    
+    @property
+    def value(self) -> T:
+        return self._value
+
+    @property
+    def links(self) -> Iterable[Link[T]]:
+        return self._links
 
 
     def _link_check(self, link: Link[T]):
         if not link.directed:
-            link.vertex.links.append(
+            link.vertex._links.append(
                 Vertex.Link(self, link.weight, link.directed)
             )
 
@@ -67,21 +77,21 @@ class Vertex(Generic[T]):
 
     def add_links(self, *links: Link[T]):
         for link in links:
-            self.links.append(link)
+            self._links.append(link)
             self._link_check(link)
 
 
     def neighbors(self):
-        return [link.vertex for link in self.links]
+        return [link.vertex for link in self._links]
 
     def __eq__(self, other: Vertex[T]):
-        return self.value == other.value
+        return self._value == other._value
 
     def __hash__(self):
-        return hash(self.value)
+        return hash(self._value)
 
     def __str__(self):
-        return f'{self.value}'
+        return f'{self._value}'
 
     def __repr__(self):
         return str(self)
@@ -189,7 +199,7 @@ class Graph(Generic[T]):
     def _min_vertices(v_attrs: dict[Vertex[T], Graph.MinAttrs[T]]) -> list[Vertex[T]]:
         """ Finds the vertices with the minimum key in the graph """
         min_val = sys.maxsize
-        min_verts = list[Vertex]()
+        min_verts = list[Vertex[T]]()
 
         for vertex, attrs in v_attrs.items():
             if attrs.copy is not None:

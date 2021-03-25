@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from time import time
-from typing import Any, Optional, TypedDict, Union
+
+import asyncio as aio
+import json
+import logging
+import socket
+
 from dataclasses import dataclass, field
+from typing import Any, Optional, TypedDict, Union
 
 from argparse import ArgumentParser
 from pathlib import Path
-
-import asyncio as aio
-import socket
-import json
-import logging
+from time import time
 
 from topology import Graph
 from connection import (
-    Message, Request, Login, Procedure, Query, QueryHit, StreamPair,
+    Location, Login, Message, Procedure, Query, QueryHit,
+    Request, StreamPair,
     ainput, getpeerbystream, merge_config_args, version_check
 )
-
 
 
 @dataclass(frozen=True)
 class WeakState:
     """ Weak peer connection state """
-    loc: tuple[str,int]
+    loc: Location
     sender: StreamPair
     files: set[str] = field(default_factory=set)
     log: logging.Logger = field(default_factory=logging.getLogger)
@@ -33,14 +34,14 @@ class WeakState:
 @dataclass(init=False)
 class SuperState:
     """ Strong peer connection state """
-    loc: tuple[str,int]
+    loc: Location
     neighbors: list[int]
     receiver: Optional[StreamPair]
     sender: Optional[StreamPair]
     log: logging.Logger
 
     def __init__(self, host: str, port: int, neighbors: list[int]):
-        self.loc = (host, port)
+        self.loc = Location(host, port)
         self.neighbors = neighbors
 
         self.receiver = None
@@ -51,7 +52,7 @@ class SuperState:
 
 class RequestCall:
     """ Pending changes to update the a given peer's state """
-    conn: StreamPair
+    _conn: StreamPair
     _args: Args
 
     class Args(TypedDict):
@@ -62,6 +63,10 @@ class RequestCall:
         self._conn = conn
         self._args = RequestCall.Args(req_type=request, **kwargs)
 
+    @property
+    def conn(self):
+        return self._conn
+
     def __call__(self):
         return self._conn.request(**self._args)
 
@@ -69,15 +74,14 @@ class RequestCall:
 class SuperPeer:
     """ Super peer node """
     _port: int
+    _queries: dict[str, StreamPair]
+    _requests: aio.Queue[RequestCall]
 
     _supers: dict[str, SuperState]
     _min_supers: Graph[str]
 
     _weaks: dict[str, WeakState]
     _remote_files: dict[StreamPair, frozenset[str]]
-
-    _queries: dict[str, StreamPair]
-    _requests: aio.Queue[RequestCall]
 
     PROMPT = (
         "1. List active weak peers\n"
@@ -89,14 +93,14 @@ class SuperPeer:
 
     def __init__(self, port: int, supers: list[SuperState]):
         """
-        Create the state structures for a strong peer node; to start running the server, 
+        Create the state structures for a strong peer node; to start running the server,
         run the function start_server
         """
         self._port = max(1, port)
 
         super_ids = [SuperPeer.id(state) for state in supers]
-        for id, s in zip(super_ids, supers):
-            s.log = default_logger(logging.getLogger(id))
+        for id, state in zip(super_ids, supers):
+            state.log = default_logger(logging.getLogger(id))
 
         self_id = SuperPeer.id(self)
         self_state = [
@@ -148,13 +152,13 @@ class SuperPeer:
         return locals | remotes
 
 
-    def get_location(self, filename: str) -> frozenset[tuple[str, int]]:
+    def get_location(self, filename: str) -> set[Location]:
         """ Find the peer nodes associated with a file """
-        locs = frozenset(
+        locs = {
             info.loc
             for info in self._weaks.values()
             if filename in info.files
-        )
+        }
 
         return locs
 
@@ -162,7 +166,7 @@ class SuperPeer:
     def get_forward_targets(self, src: StreamPair) -> list[StreamPair]:
         """
         Gets all neighboring super peer connections excluding the
-        source neighbor and ones not in the min span 
+        source neighbor and ones not in the min span
         """
         self_id = SuperPeer.id(self)
         return [
@@ -187,7 +191,7 @@ class SuperPeer:
 
     async def start_server(self):
         """
-        Initializes the indexer server and workers; awaiting on 
+        Initializes the indexer server and workers; awaiting on
         this method will wait until the server is closed
         """
         # async sync state needs to be init from async context
@@ -239,8 +243,8 @@ class SuperPeer:
     async def _connect_supers(self, host: str):
         """ Connects to all specified super peers """
         async def connect_task(sup: SuperState):
-            info = sup.loc
-            conn = aio.create_task(aio.open_connection(*info))
+            loc = sup.loc
+            conn = aio.create_task(aio.open_connection(loc.host, loc.port))
             fin, pend = await aio.wait({conn}, timeout=8)
 
             for p in pend: p.cancel()
@@ -414,8 +418,8 @@ class SuperPeer:
 
             self._queries[weak_query.id] = conn
             await self._local_query(weak_query)
-            await self._forward_query(weak_query) 
-        
+            await self._forward_query(weak_query)
+
 
         async def update(files: frozenset[str]):
             """ Actions for weak update requests """
@@ -424,9 +428,15 @@ class SuperPeer:
             weak.files.update(files)
             await self._forward_update(conn, files)
 
+
+        async def files():
+            """ Actions for weak files requests """
+            await self._requests.put(
+                RequestCall(Request.FILES, conn, files=self.get_files())
+            )
+
         try:
-            loc = (login.host, login.port)
-            self._weaks[login.id] = WeakState(loc, conn, log=logger)
+            self._weaks[login.id] = WeakState(login.location, conn, log=logger)
 
             while procedure := await Message[Procedure].read(reader):
                 request = procedure.request
@@ -435,6 +445,8 @@ class SuperPeer:
                     await procedure(query)
                 elif request is Request.UPDATE:
                     await procedure(update)
+                elif request is Request.FILES:
+                    await procedure(files)
                 else:
                     raise ValueError('Did not get an expected request')
 
@@ -454,7 +466,7 @@ class SuperPeer:
 
     async def _local_query(self, query: Query):
         """
-        Checks if query filename exists locally and keeps track of query 
+        Checks if query filename exists locally and keeps track of query
         alive timeout
         """
         locs = self.get_location(query.filename)
@@ -580,7 +592,7 @@ def parse_json(path: Union[Path, str]) -> list[SuperState]:
     """
     if isinstance(path, str):
         path = Path(path)
-    
+
     path = path.with_suffix('.json')
     with open(path) as f:
         # potential type errors

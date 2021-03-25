@@ -27,11 +27,11 @@ CHUNK_SIZE = 1024
 
 class Request(Enum):
     """ Request messages """
-    FILES = 'files_list'
     DOWNLOAD = 'download'
-    UPDATE = 'update_files'
-    QUERY = 'query'
+    FILES = 'files_list'
     HIT = 'hit'
+    QUERY = 'query'
+    UPDATE = 'update_files'
 
     @staticmethod
     def parse(poss_req: str) -> Request:
@@ -46,7 +46,19 @@ T = TypeVar('T')
 
 @dataclass(frozen=True)
 class Procedure:
-    """ Request message wrapped with positional and keyword args """
+    """
+    Request message wrapped with positional and keyword args.
+
+    Each Request value has various types of expected arguments to be
+    passed with.
+
+    Expected arguments:
+        DOWNLOAD -- filename: str
+        FILES -- None
+        HIT -- hit: QueryHit
+        QUERY -- query: Query | filename: str
+        UPDATE -- files: frozenset[str]
+    """
     request: Request
     _args: tuple[Any, ...]
     _kwargs: dict[str, Any]
@@ -59,14 +71,20 @@ class Procedure:
         **kwargs: Any) -> T:
         """
         Calls the passed function, supplying in a merge of all of the args.
-        The order of the positional and precedence of the keyword args is
-        based on self_first
+
+        Arguments:
+            func: function that is being called, will Procedure and passed args being supplied
+            self_first: order of the positional and precedence of the keyword args
+
+        Returns:
+            Result of the pass function
         """
         pos_args = (
             args + self._args
             if not self_first else
             self._args + args
         )
+
         key_args = ( # 2nd keywords override
             self._kwargs | kwargs
             if not self_first else
@@ -85,7 +103,7 @@ class Message(Generic[T]):
 
     def __init__(self, payload: T):
         """
-        Creates a message that can be packed; the payload should 
+        Creates a message that can be packed; the payload should
         not be pickled yet
         """
         self._payload = payload
@@ -151,11 +169,18 @@ class StreamPair(NamedTuple):
         receiver: Optional[Receiver[T]] = None,
         **kwargs: Any) -> T:
         """
-        Sends a request with keyword arguments, and gets a response back if as_type 
-        or receiver is specified, otherwise returns None. Only one of as_type or 
-        receiver should be defined; receiver specifies how the stream will be read 
-        in order to generate a value, while as_type specifies to use a default 
-        receiver where one message is read, and converted to the type
+        Sends a request with keyword arguments;
+        Only one of as_type or receiver should be defined;
+        Remaining args and kwargs are forwarded as Procedure args, see
+        Procedure class for expected arg types
+
+        Keyword arguments:
+            as_type: specifies to use a default receiver where one message is read
+            receiver: specifies how the stream will be read
+
+        Returns:
+            A response back if as_type or receiver is specified, otherwise
+            returns None
         """
         procedure = Procedure(req_type, args, kwargs)
         await Message.write(self.writer, procedure)
@@ -171,6 +196,12 @@ class StreamPair(NamedTuple):
             return cast(Any, None) # kind of hacky
 
 
+class Location(NamedTuple):
+    """ Main information for socket locations """
+    host: str
+    port: int
+
+
 class Login(NamedTuple):
     """ Initial peer identification """
     id: str
@@ -178,13 +209,17 @@ class Login(NamedTuple):
     port: int
     is_super: bool = False
 
+    @property
+    def location(self) -> Location:
+        return Location(self.host, self.port)
+
 #endregion
 
 
 #region query messaging across super peers
 
 class Query(NamedTuple):
-    """ 
+    """
     Information broadcasted to super peers for a file location
     """
     id: str
@@ -199,7 +234,7 @@ class Query(NamedTuple):
 class QueryHit(NamedTuple):
     """ Response to a location query """
     id: str
-    location: frozenset[tuple[str, int]]
+    location: set[Location]
 
 #endregion
 
