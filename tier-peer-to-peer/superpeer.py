@@ -302,9 +302,9 @@ class SuperPeer:
             try:
                 conn = req_call.conn
                 async with usage_check:
-                    while conn not in used_conns:
-                        await usage_check.wait()
-
+                    await usage_check.wait_for(
+                        lambda: conn not in used_conns
+                    )
                     used_conns.add(conn)
 
                 await req_call()
@@ -478,7 +478,7 @@ class SuperPeer:
 
         if locs:
             src = self._queries[query.id]
-            hit = QueryHit(query.id, locs)
+            hit = QueryHit(query.id, query.filename, locs)
             await self._requests.put(
                 RequestCall(Request.HIT, src, hit=hit)
             )
@@ -518,70 +518,6 @@ class SuperPeer:
 
     #endregion
 
-
-
-    # async def _peer_connected(self, peer: StreamPair):
-    #     """ A connection with a specific peer """
-    #     reader, writer = peer
-    #     logger = logging.getLogger()
-
-    #     try:
-    #         login = await Message[Login].read(reader)
-    #         username, host, port = login
-    #         loc = (host, port)
-    #         logger = logging.getLogger(username)
-
-    #         self._peers[peer] = WeakState(loc, log=default_logger(logger))
-
-    #         remote = getpeerbystream(writer)
-    #         if remote:
-    #             logger.debug(f"connected to {username}: {remote}")
-
-    #             await self._connect_loop(peer)
-
-    #     except aio.IncompleteReadError:
-    #         pass
-
-    #     except Exception as e:
-    #         logger.exception(e)
-    #         await Message.write(writer, e)
-
-    #     finally:
-    #         if not reader.at_eof():
-    #             writer.write_eof()
-
-    #         logger.debug('ending connection')
-    #         writer.close()
-
-    #         await self._requests.put((Indexer.DELETE_PRIORITY, RequestCall(peer)))
-    #         await writer.wait_closed()
-
-
-    # async def _send_files(self, peer: StreamPair):
-    #     """
-    #     Handles the get files request, and sends files to given socket
-    #     """
-    #     self._peers[peer].log.debug("getting all files in cluster")
-    #     await self._requests.join() # wait for no more file updates
-    #     await Message.write(peer.writer, self.get_files())
-
-
-    # async def _receive_update(self, peer: StreamPair, **update_args: Any):
-    #     """ Notify update handler of a update task, and wait for completion """
-    #     self._peers[peer].log.debug("updating file info")
-    #     signal = self._peers[peer].signal
-    #     signal.clear()
-    #     await self._requests.put((Indexer.UPDATE_PRIORITY, RequestCall(peer, update_args)))
-    #     await signal.wait() # block stream access til finished
-
-
-    # async def _query_file(self, peer: StreamPair, filename: str):
-    #     """ Reply to stream with the peers that have specified file """
-    #     self._peers[peer].log.debug(f'querying for file {filename}')
-    #     await self._requests.join() # wait for no more file updates
-    #     await Message.write(peer.writer, self.get_location(filename))
-
-    #endregion
 
 
 def parse_json(path: Union[Path, str]) -> list[SuperState]:

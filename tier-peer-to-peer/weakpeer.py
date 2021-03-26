@@ -10,7 +10,7 @@ import socket
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Optional, Union, cast
 
 from argparse import ArgumentParser
 from functools import partial
@@ -35,6 +35,114 @@ class IndexState:
     access: aio.Lock = field(default_factory=aio.Lock)
 
 
+@dataclass
+class RequestState:
+    """
+    Synchronized handler for all received procedures from the super peer 
+    """
+    _conn: Optional[IndexState] = None
+    _queries: dict[str, Optional[set[Location]]] = field(default_factory=dict)
+    _files: Optional[frozenset[str]] = None
+
+    _access: aio.Condition = field(default_factory=aio.Condition)
+    _waiters: dict[Request, int] = field(default_factory=dict)
+
+
+    async def listener(self, conn: IndexState):
+        """
+        Loop listener that switches the receive action based on the 
+        request type
+        """
+        self._conn = conn
+        try:
+            reader, _ = self._conn.pair
+            while True:
+                response = await Message[Procedure].read(reader)
+                request = response.request
+
+                if request is Request.FILES:
+                    await self._got_files(response)
+                elif request is Request.HIT:
+                    await self._got_hit(response)
+                else:
+                    logging.error(f'got an unknown {request=}')
+
+        except aio.CancelledError:
+            pass
+
+
+    async def _got_files(self, response: Procedure):
+        """ Actions for file request responses """
+        async with self._access:
+            self._files = response.args.files
+            self._access.notify_all()
+
+        async with self._access:
+            await self._access.wait_for(
+                lambda: self._waiters[Request.FILES] == 0
+            )
+            self._files = None
+
+
+    async def _got_hit(self, response: Procedure):
+        """ Actions for query request responses """
+        hit: QueryHit = response.args.hit
+        async with self._access:
+            self._queries[hit.filename] = hit.locations
+            self._access.notify_all()
+        
+        async with self._access:
+            await self._access.wait_for(
+                lambda: self._waiters[Request.HIT] == 0
+            )
+            del self._queries[hit.filename]
+
+
+    async def wait_for_files(self) -> frozenset[str]:
+        """
+        Sends and then waits for a file request response; simultaneous 
+        file requests converge to the same request-and-response cycle
+        """
+        if not self._conn:
+            raise aio.InvalidStateError('Super connection not initialized')
+
+        async with self._access:
+            self._waiters[Request.FILES] += 1
+
+            if self._waiters[Request.FILES] == 1: # make sure only one active request
+                async with self._conn.access:
+                    await self._conn.pair.request(Request.FILES)
+
+            files = await self._access.wait_for(lambda: self._files) 
+            self._waiters[Request.FILES] -= 1
+
+            return cast(frozenset[str], files) # should not be None
+
+
+    async def wait_for_query(self, filename: str) -> set[Location]:
+        """
+        Sends and then waits for a query request response; like the above function,
+        simultaneous queries for the same filename converge to the same
+        request-and-response cycle
+        """
+        if not self._conn:
+            raise aio.InvalidStateError('Super connection not initialized')
+
+        async with self._access:
+            self._waiters[Request.HIT] += 1
+
+            if filename not in self._queries:
+                self._queries[filename] = None
+                async with self._conn.access:
+                    await self._conn.pair.request(Request.QUERY, filename=filename)
+
+            locs = await self._access.wait_for(lambda: self._queries[filename])
+            self._waiters[Request.HIT] -= 1
+            locs = cast(set[Location], locs)
+
+            return set(locs) # make copy so modifications don't interfere
+
+
 
 class WeakPeer:
     """ Represents a single peer node """
@@ -42,6 +150,9 @@ class WeakPeer:
     _user: str
     _direct: Path
     _index_start: Location
+
+    # async state, not defined in init
+    _requests: RequestState
     _dir_update: aio.Event
 
     PROMPT = (
@@ -101,6 +212,7 @@ class WeakPeer:
         """
         # async sync state needs to be init from async context
         self._dir_update = aio.Event()
+        self._requests = RequestState()
 
         def to_upload(reader: aio.StreamReader, writer: aio.StreamWriter):
             """ Indexer closure as a stream callback """
@@ -120,18 +232,20 @@ class WeakPeer:
                 # make sure that event is listening before it can be set and cleared
                 first_update = aio.create_task(self._dir_update.wait())
                 sender = aio.create_task(self._update_dir(super_peer))
+                listener = aio.create_task(self._requests.listener(super_peer))
 
                 # only accept connections and user input after a dir_update
                 # should not deadlock, keep eye on
                 await first_update
                 await server.start_serving()
 
-                session = aio.create_task(self._session(super_peer))
+                session = aio.create_task(self._session())
                 conn = aio.create_task(self._watch_connection(super_peer))
 
                 await aio.wait([session, conn], return_when=aio.FIRST_COMPLETED)
 
                 sender.cancel()
+                listener.cancel()
 
                 if not session.done(): session.cancel()
                 if not conn.done(): conn.cancel()
@@ -200,7 +314,8 @@ class WeakPeer:
             while True:
                 await self._dir_update.wait()
                 async with indexer.access:
-                    await indexer.pair.request(Request.UPDATE, files=self.get_files())
+                    files = self.get_files()
+                    await indexer.pair.request(Request.UPDATE, files=files)
                     # should be only place where dir_update is cleared
                     self._dir_update.clear()
 
@@ -229,20 +344,19 @@ class WeakPeer:
 
     #region session methods
 
-    async def _session(self, indexer: IndexState):
+    async def _session(self):
         """ Cli for peer """
         try:
             while request := await ainput(WeakPeer.PROMPT):
-                async with indexer.access:
-                    if request == '1':
-                        await self._list_system(indexer)
+                if request == '1':
+                    await self._list_system()
 
-                    elif request == '2':
-                        await self._run_download(indexer)
+                elif request == '2':
+                    await self._run_download()
 
-                    else:
-                        print(f'Exiting {self._user} peer server')
-                        break
+                else:
+                    print(f'Exiting {self._user} peer server')
+                    break
 
         except aio.CancelledError:
             pass
@@ -254,26 +368,26 @@ class WeakPeer:
 
 
 
-    async def _system_files(self, indexer: IndexState) -> list[str]:
+    async def _system_files(self) -> list[str]:
         """ Fetches all the files in the system based on indexer """
-        files = await indexer.pair.request(Request.FILES, as_type=frozenset[str])
+        files = await self._requests.wait_for_files()
         return sorted(files)
 
 
-    async def _list_system(self, indexer: IndexState):
+    async def _list_system(self):
         """ Fetches then prints the system files """
-        files = await self._system_files(indexer)
+        files = await self._system_files()
         print('The files on the system:')
         print('\n'.join(files))
 
 
 
-    async def _run_download(self, indexer: IndexState):
+    async def _run_download(self):
         """
         Queries the indexer, prompts the user, then fetches file from peer
         """
         start_time = time()
-        files = await self._system_files(indexer)
+        files = await self._system_files()
         get_elapsed = time() - start_time
 
         if len(files) == 0:
@@ -285,11 +399,7 @@ class WeakPeer:
 
         # query for loc
         start_time = time()
-        peers = await indexer.pair.request(
-            Request.QUERY,
-            filename=picked,
-            as_type=QueryHit # TODO: add timeout
-        )
+        peers = await self._requests.wait_for_query(picked)
 
         query_elapsed = time() - start_time
         elapsed = (get_elapsed + query_elapsed) / 2
@@ -299,7 +409,6 @@ class WeakPeer:
         at_self = True
         target = None
 
-        peers = peers.location
         while at_self and len(peers) > 0:
             peer = peers.pop()
             at_self = self_loc == peer
@@ -311,6 +420,7 @@ class WeakPeer:
                 logging.error(f'location for {picked} is in own peer')
             else:
                 logging.error(f"location for {picked} cannot be found")
+
             return
 
         # use a random peer target

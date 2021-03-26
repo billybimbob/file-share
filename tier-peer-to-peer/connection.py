@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import pickle
+import struct
+import sys
+
+from collections.abc import Awaitable
+from dataclasses import dataclass
+from enum import Enum
 from typing import (
     Any, Callable, Generic, NamedTuple, Optional, TypeVar, Union, cast
 )
-from dataclasses import dataclass
-from collections.abc import Awaitable
-from enum import Enum
 
-from pathlib import Path
-from configparser import ConfigParser
 from argparse import Namespace
-
-import sys
-import struct
-import pickle
-import asyncio
+from configparser import ConfigParser
+from pathlib import Path
 
 
 # Max amount read for files
@@ -62,6 +62,21 @@ class Procedure:
     request: Request
     _args: tuple[Any, ...]
     _kwargs: dict[str, Any]
+
+    class Args:
+        def __init__(self, args: tuple[Any, ...], kwargs: dict[str, Any]):
+            self._names = kwargs
+            self._pos = args
+
+        def __getitem__(self, idx: int) -> Any:
+            return self._pos[idx]
+
+        def __getattribute__(self, name: str) -> Any:
+            return self._names[name]
+
+    @property
+    def args(self):
+        return Procedure.Args(self._args, self._kwargs)
 
     def __call__(
         self,
@@ -234,7 +249,8 @@ class Query(NamedTuple):
 class QueryHit(NamedTuple):
     """ Response to a location query """
     id: str
-    location: set[Location]
+    filename: str
+    locations: set[Location]
 
 #endregion
 
@@ -253,11 +269,13 @@ async def ainput(prompt: str='') -> str:
     return await asyncio.to_thread(input, prompt)
 
 
-# def shallow_obj(map: Dict[str, Any]) -> object:
-#     """
-#     Convert a dictionary into a python object, where each key is an attribute
-#     """
-#     return namedtuple('obj', map.keys())(*map.values())
+def as_obj(src: dict[str, Any]) -> object:
+    """
+    Convert a dictionary into a python object, where each key is an attribute
+    """
+    obj = object()
+    obj.__dict__.update(src)
+    return obj
 
 
 def read_main_config(filename: str) -> dict[str, Union[str, int]]:
