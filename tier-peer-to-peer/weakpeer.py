@@ -19,8 +19,7 @@ from time import time
 
 from connection import (
     CHUNK_SIZE,
-    Location, Login, Message, Procedure,
-    QueryHit, Request, StreamPair,
+    Location, Login, Message, Procedure, Query, Request, StreamPair,
     ainput, merge_config_args, version_check
 )
 
@@ -28,7 +27,7 @@ from connection import (
 @dataclass(frozen=True)
 class IndexState:
     """
-    All variable and constant information about the indexer connection
+    All information about the indexer connection
     """
     info: Location
     pair: StreamPair
@@ -41,11 +40,12 @@ class RequestState:
     Synchronized handler for all received procedures from the super peer 
     """
     _conn: Optional[IndexState] = None
-    _queries: dict[str, Optional[set[Location]]] = field(default_factory=dict)
+    _queries: dict[str, set[Location]] = field(default_factory=dict)
     _files: Optional[frozenset[str]] = None
 
     _access: aio.Condition = field(default_factory=aio.Condition)
-    _waiters: dict[Request, int] = field(default_factory=dict)
+    _waiters: dict[Request, int] = field(
+        default_factory=lambda: { Request.QUERY: 0, Request.FILES: 0 })
 
 
     async def listener(self, conn: IndexState):
@@ -57,13 +57,13 @@ class RequestState:
         try:
             reader, _ = self._conn.pair
             while True:
-                response = await Message[Procedure].read(reader)
-                request = response.request
+                procedure = await Message[Procedure].read(reader)
+                request = procedure.request
 
                 if request is Request.FILES:
-                    await self._got_files(response)
-                elif request is Request.HIT:
-                    await self._got_hit(response)
+                    await procedure(self._got_files)
+                elif request is Request.QUERY:
+                    await procedure(self._got_hit)
                 else:
                     logging.error(f'got an unknown {request=}')
 
@@ -71,31 +71,30 @@ class RequestState:
             pass
 
 
-    async def _got_files(self, response: Procedure):
+    async def _got_files(self, files: frozenset[str]):
         """ Actions for file request responses """
         async with self._access:
-            self._files = response.args.files
+            self._files = files
             self._access.notify_all()
 
         async with self._access:
             await self._access.wait_for(
-                lambda: self._waiters[Request.FILES] == 0
-            )
+                lambda: self._waiters[Request.FILES] == 0)
+
             self._files = None
 
 
-    async def _got_hit(self, response: Procedure):
+    async def _got_hit(self, query: Query):
         """ Actions for query request responses """
-        hit: QueryHit = response.args.hit
         async with self._access:
-            self._queries[hit.filename] = hit.locations
+            self._queries[query.filename] = query.locations
             self._access.notify_all()
         
         async with self._access:
             await self._access.wait_for(
-                lambda: self._waiters[Request.HIT] == 0
-            )
-            del self._queries[hit.filename]
+                lambda: self._waiters[Request.QUERY] == 0)
+
+            del self._queries[query.filename]
 
 
     async def wait_for_files(self) -> frozenset[str]:
@@ -106,15 +105,19 @@ class RequestState:
         if not self._conn:
             raise aio.InvalidStateError('Super connection not initialized')
 
+        logging.info('trying to get files')
         async with self._access:
             self._waiters[Request.FILES] += 1
 
             if self._waiters[Request.FILES] == 1: # make sure only one active request
                 async with self._conn.access:
                     await self._conn.pair.request(Request.FILES)
+                    logging.info('requested files')
 
             files = await self._access.wait_for(lambda: self._files) 
+
             self._waiters[Request.FILES] -= 1
+            self._access.notify_all()
 
             return cast(frozenset[str], files) # should not be None
 
@@ -129,19 +132,28 @@ class RequestState:
             raise aio.InvalidStateError('Super connection not initialized')
 
         async with self._access:
-            self._waiters[Request.HIT] += 1
+            locs = None
+            try:
+                self._waiters[Request.QUERY] += 1
 
-            if filename not in self._queries:
-                self._queries[filename] = None
-                async with self._conn.access:
-                    await self._conn.pair.request(Request.QUERY, filename=filename)
+                if self._waiters[Request.QUERY] == 1:
+                    async with self._conn.access:
+                        await self._conn.pair.request(
+                            Request.QUERY, filename=filename)
 
-            locs = await self._access.wait_for(lambda: self._queries[filename])
-            self._waiters[Request.HIT] -= 1
-            locs = cast(set[Location], locs)
+                await aio.wait_for(
+                    self._access.wait_for(lambda: filename not in self._queries), 30)
+                locs = self._queries[filename]
 
-            return set(locs) # make copy so modifications don't interfere
+            except aio.TimeoutError:
+                pass
 
+            finally:
+                self._waiters[Request.QUERY] -= 1
+                self._access.notify_all()
+
+            # make copy so modifications don't interfere
+            return set(locs) if locs else set[Location]()
 
 
 class WeakPeer:
@@ -231,6 +243,7 @@ class WeakPeer:
 
                 # make sure that event is listening before it can be set and cleared
                 first_update = aio.create_task(self._dir_update.wait())
+
                 sender = aio.create_task(self._update_dir(super_peer))
                 listener = aio.create_task(self._requests.listener(super_peer))
 
@@ -266,7 +279,7 @@ class WeakPeer:
     async def _connect_super(self, host: str) -> IndexState:
         start = self._index_start
 
-        logging.info(f'trying connection with indexer at {start}')
+        logging.info(f'trying connection with super at {start}')
 
         conn = aio.create_task(aio.open_connection(start.host, start.port))
         fin, pend = await aio.wait({conn}, timeout=8)
@@ -275,6 +288,7 @@ class WeakPeer:
         if len(fin) == 0:
             raise aio.TimeoutError("Connection took to long")
 
+        logging.info(f'connection with super')
         in_pair = fin.pop().result()
         in_pair = StreamPair(*in_pair)
 
@@ -420,7 +434,6 @@ class WeakPeer:
                 logging.error(f'location for {picked} is in own peer')
             else:
                 logging.error(f"location for {picked} cannot be found")
-
             return
 
         # use a random peer target
@@ -652,7 +665,7 @@ if __name__ == "__main__":
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--directory", default='', help="the client download folder")
     args.add_argument("-i", "--in_port", type=int, default=8888, help="the port of the indexing server")
-    args.add_argument("-l", "--log", default='peer.log', help="the file to write log info to")
+    args.add_argument("-l", "--log", default='weak.log', help="the file to write log info to")
     args.add_argument("-p", "--port", type=int, default=8889, help="the port to listen for connections")
     args.add_argument("-u", "--user", help="username of the client connecting")
     args.add_argument("-v", "--verbosity", type=int, default=10, choices=[0, 10, 20, 30, 40, 50], help="the logging verboseness, level corresponds to default levels")

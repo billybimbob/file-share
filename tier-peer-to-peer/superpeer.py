@@ -16,8 +16,7 @@ from time import time
 
 from topology import Graph
 from connection import (
-    Location, Login, Message, Procedure, Query, QueryHit,
-    Request, StreamPair,
+    Location, Login, Message, Procedure, Query, Request, StreamPair,
     ainput, getpeerbystream, merge_config_args, version_check
 )
 
@@ -40,7 +39,13 @@ class SuperState:
     sender: Optional[StreamPair]
     log: logging.Logger
 
-    def __init__(self, host: str, port: int, neighbors: list[int]):
+    def __init__(self, host: Optional[str], port: int, neighbors: Optional[list[int]]):
+        if not host:
+            host = socket.gethostname()
+
+        if not neighbors:
+            neighbors = list()
+
         self.loc = Location(host, port)
         self.neighbors = neighbors
 
@@ -75,13 +80,14 @@ class SuperPeer:
     """ Super peer node """
     _port: int
     _queries: dict[str, StreamPair]
-    _requests: aio.Queue[RequestCall]
 
     _supers: dict[str, SuperState]
-    _min_supers: Graph[str]
-
     _weaks: dict[str, WeakState]
+    _min_supers: Graph[str]
     _remote_files: dict[StreamPair, frozenset[str]]
+
+    # async state, not defined in init
+    _requests: aio.Queue[RequestCall]
 
     PROMPT = (
         "1. List active weak peers\n"
@@ -91,10 +97,10 @@ class SuperPeer:
         "Select an Option: ")
 
 
-    def __init__(self, port: int, supers: list[SuperState]):
+    def __init__(self, port: int, supers: list[SuperState], **_):
         """
-        Create the state structures for a strong peer node; to start running the server,
-        run the function start_server
+        Create the state structures for a strong peer node; to start running 
+        the server, run the function start_server
         """
         self._port = max(1, port)
 
@@ -122,6 +128,7 @@ class SuperPeer:
         }
 
         self._min_supers = Graph.from_map(super_map).min_span()
+        self._remote_files = dict()
 
 
     @staticmethod
@@ -262,32 +269,6 @@ class SuperPeer:
         await aio.gather(*[connect_task(sup) for sup in self._supers.values()])
 
 
-    async def _session(self):
-        """ Cli for indexer """
-        while option := await ainput(SuperPeer.PROMPT):
-            if option == '1':
-                peer_users = '\n'.join(
-                    str( getpeerbystream(s.sender) )
-                    for s in self._weaks.values()
-                    if not s.sender.writer.is_closing()
-                )
-                print('The peers connected are: ')
-                print(f'{peer_users}\n')
-
-            elif option == '2':
-                pass
-
-            elif option == '3':
-                files = '\n'.join(self.get_files())
-                print('The files on the system are:')
-                print(f'{files}\n')
-
-            else:
-                break
-
-        print('Exiting server')
-
-
 
     async def _request_caller(self):
         """ Handles sending all requests to specified targets"""
@@ -308,7 +289,6 @@ class SuperPeer:
                     used_conns.add(conn)
 
                 await req_call()
-
                 async with usage_check:
                     used_conns.remove(conn)
                     usage_check.notify_all()
@@ -327,13 +307,46 @@ class SuperPeer:
                 if completed:
                     requests -= completed
 
+                logging.info('waiting for requests')
                 req_call = await self._requests.get()
+                logging.info('got a request')
                 requests.add(
                     aio.create_task(request_task(req_call))
                 )
 
         except aio.CancelledError:
             for req in requests: req.cancel()
+
+
+
+    async def _session(self):
+        """ Cli for indexer """
+        while option := await ainput(SuperPeer.PROMPT):
+            if option == '1':
+                weak_peers = '\n'.join(
+                    str(s.loc)
+                    for s in self._weaks.values()
+                    if not s.sender.writer.is_closing()
+                )
+                print(f'The weak peers connected are:\n{weak_peers}\n')
+
+            elif option == '2':
+                super_peers = '\n'.join(
+                    str(s)
+                    for s in self._supers.values()
+                    if s.sender and not s.sender.writer.is_closing()
+                )
+                print(f'The super peers connected are: \n{super_peers}\n')
+
+            elif option == '3':
+                files = '\n'.join(self.get_files())
+                print('The files on the system are:')
+                print(f'{files}\n')
+
+            else:
+                break
+
+        print('Exiting server')
 
 
     #region receivers
@@ -344,26 +357,25 @@ class SuperPeer:
         logger = self._supers[login.id].log
 
         async def query(query: Query):
-            """ Actions for strong query requests """
-            start = time()
-            self._queries[query.id] = self.get_sender(login)
-            await self._local_query(query)
+            """ Actions for super query requests """
+            if query.is_hit:
+                if query.id not in self._queries:
+                    logging.error(f'hit for {query.id} does not exist')
+                    return
 
-            elapsed = time() - start
-            new_query = query.elapsed(elapsed)
-            await self._forward_query(new_query)
+                src = self._queries[query.id]
+                await self._requests.put(
+                    RequestCall(Request.QUERY, src, query=query)
+                )
 
+            else:
+                start = time()
+                self._queries[query.id] = self.get_sender(login)
+                await self._local_query(query)
 
-        async def hit(hit: QueryHit):
-            """ Actions for super hit requests """
-            if hit.id not in self._queries:
-                logging.error(f'hit for {hit.id} does not exist')
-                return
-
-            src = self._queries[hit.id]
-            await self._requests.put(
-                RequestCall(Request.HIT, src, hit=hit)
-            )
+                elapsed = time() - start
+                new_query = query.elapsed(elapsed)
+                await self._forward_query(new_query)
 
 
         async def update(files: frozenset[str]):
@@ -381,9 +393,6 @@ class SuperPeer:
 
                 if request is Request.QUERY:
                     await procedure(query)
-
-                elif request is Request.HIT:
-                    await procedure(hit)
 
                 elif request is Request.UPDATE:
                     await procedure(update)
@@ -409,6 +418,7 @@ class SuperPeer:
 
         async def query(filename: str):
             """ Actions for weak query requests """
+            logger.info(f'query for {filename}')
             conn_info = getpeerbystream(conn)
             curr_time = time()
 
@@ -423,30 +433,38 @@ class SuperPeer:
 
         async def update(files: frozenset[str]):
             """ Actions for weak update requests """
+            logger.info(f'update files')
             weak = self._weaks[login.id]
             weak.files.clear()
             weak.files.update(files)
             await self._forward_update(conn, files)
+            logging.info('finished updating')
 
 
         async def files():
             """ Actions for weak files requests """
+            logger.info(f'request for file list')
+            files = self.get_files()
             await self._requests.put(
-                RequestCall(Request.FILES, conn, files=self.get_files())
+                RequestCall(Request.FILES, conn, files=files)
             )
 
         try:
             self._weaks[login.id] = WeakState(login.location, conn, log=logger)
+            logger.info(f'connected to {login}')
 
             while procedure := await Message[Procedure].read(reader):
                 request = procedure.request
 
                 if request is Request.QUERY:
                     await procedure(query)
+
                 elif request is Request.UPDATE:
                     await procedure(update)
+
                 elif request is Request.FILES:
                     await procedure(files)
+
                 else:
                     raise ValueError('Did not get an expected request')
 
@@ -478,9 +496,9 @@ class SuperPeer:
 
         if locs:
             src = self._queries[query.id]
-            hit = QueryHit(query.id, query.filename, locs)
+            query = Query(query.id, query.filename, _locations=locs)
             await self._requests.put(
-                RequestCall(Request.HIT, src, hit=hit)
+                RequestCall(Request.QUERY, src, query=query)
             )
 
         aio.create_task(alive_timer())
@@ -496,9 +514,11 @@ class SuperPeer:
                 RequestCall(Request.QUERY, sender, query=query))
 
         src = self._queries[query.id]
+        targets = self.get_forward_targets(src)
+        if not targets: return
+
         await aio.gather(*[
-            query_request(sender)
-            for sender in self.get_forward_targets(src)
+            query_request(sender) for sender in targets
         ])
 
 
@@ -508,12 +528,15 @@ class SuperPeer:
         in the min span
         """
         def update_request(sender: StreamPair):
+            logging.info('forwarding update')
             return self._requests.put(
                 RequestCall(Request.UPDATE, sender, files=files))
 
+        targets = self.get_forward_targets(src)
+        if not targets: return
+
         await aio.gather(*[
-            update_request(sender)
-            for sender in self.get_forward_targets(src)
+            update_request(sender) for sender in targets
         ])
 
     #endregion
@@ -564,14 +587,17 @@ if __name__ == "__main__":
 
     args = ArgumentParser(description="creates and starts an indexing server node")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
-    args.add_argument("-l", "--log", default='indexer.log', help="the file to write log info to")
+    args.add_argument("-l", "--log", default='super.log', help="the file to write log info to")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port to run the server on")
+    args.add_argument("-m", "--map", help="the super peer structure json file map")
 
     args = args.parse_args()
+
+    supers = parse_json(args.map)
     args = merge_config_args(args)
 
     init_log(**args)
 
-    indexer = SuperPeer(**args)
+    indexer = SuperPeer(supers=supers, **args)
     aio.run(indexer.start_server())
 

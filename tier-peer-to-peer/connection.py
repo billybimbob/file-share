@@ -29,7 +29,6 @@ class Request(Enum):
     """ Request messages """
     DOWNLOAD = 'download'
     FILES = 'files_list'
-    HIT = 'hit'
     QUERY = 'query'
     UPDATE = 'update_files'
 
@@ -50,14 +49,16 @@ class Procedure:
     Request message wrapped with positional and keyword args.
 
     Each Request value has various types of expected arguments to be
-    passed with.
+    passed with. Below specifies the expects args, with the left side
+    of the pipe being the initiating request, and the right side is
+    the response type. N/A indicates that the request is not expected
+    to be received, and None indicates that no args are expected
 
     Expected arguments:
-        DOWNLOAD -- filename: str
-        FILES -- None
-        HIT -- hit: QueryHit
-        QUERY -- query: Query | filename: str
-        UPDATE -- files: frozenset[str]
+        DOWNLOAD: filename - str | N/A
+        FILES: None | files - frozenset[str]
+        QUERY: query - Query or filename - str | query - Query
+        UPDATE: files - frozenset[str] | files - frozenset[str] or N/A
     """
     request: Request
     _args: tuple[Any, ...]
@@ -233,24 +234,39 @@ class Login(NamedTuple):
 
 #region query messaging across super peers
 
-class Query(NamedTuple):
+@dataclass(frozen=True)
+class Query:
     """
     Information broadcasted to super peers for a file location
     """
     id: str
     filename: str
-    alive_time: float
+    _alive_time: Optional[float] = None
+    _locations: Optional[set[Location]] = None
 
     def elapsed(self, time_change: float) -> Query:
         """ Creates an updated query, with the alive_time updated """
-        return Query(self.id, self.filename, self.alive_time - time_change)
+        return Query(self.id, self.filename, self._alive_time - time_change)
 
+    @property
+    def is_hit(self):
+        return not self._alive_time and self._locations
 
-class QueryHit(NamedTuple):
-    """ Response to a location query """
-    id: str
-    filename: str
-    locations: set[Location]
+    @property
+    def alive_time(self):
+        """ Gets the alive time, only call if is_hit is False """
+        if not self._alive_time:
+            raise RuntimeError('Query is a hit type')
+
+        return self._alive_time
+
+    @property
+    def locations(self):
+        """ Gets the locations, only call if is_hit is True """
+        if not self._locations:
+            raise RuntimeError('Query is not a hit type')
+
+        return self._locations
 
 #endregion
 
