@@ -8,7 +8,7 @@ import logging
 import socket
 
 from dataclasses import dataclass, field
-from typing import Any, Optional, TypedDict, Union
+from typing import Any, Optional, Union
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -32,7 +32,7 @@ class WeakState:
 
 @dataclass(init=False)
 class SuperState:
-    """ Strong peer connection state """
+    """ Super peer connection state """
     loc: Location
     neighbors: list[int]
     receiver: Optional[StreamPair]
@@ -58,15 +58,11 @@ class SuperState:
 class RequestCall:
     """ Pending changes to update the a given peer's state """
     _conn: StreamPair
-    _args: Args
-
-    class Args(TypedDict):
-        """ Args for StreamPeer requests """
-        req_type: Request
+    _args: dict[str, Any]
 
     def __init__(self, request: Request, conn: StreamPair, **kwargs: Any):
         self._conn = conn
-        self._args = RequestCall.Args(req_type=request, **kwargs)
+        self._args = dict(req_type=request, **kwargs)
 
     @property
     def conn(self):

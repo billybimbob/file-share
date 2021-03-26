@@ -25,37 +25,41 @@ from connection import (
 
 
 @dataclass(frozen=True)
-class IndexState:
-    """
-    All information about the indexer connection
-    """
+class SuperConnection:
+    """ All information about the super server connection """
     info: Location
-    pair: StreamPair
+    stream: StreamPair
     access: aio.Lock = field(default_factory=aio.Lock)
 
 
-@dataclass
-class RequestState:
+class RequestsHandler:
     """
     Synchronized handler for all received procedures from the super peer 
     """
-    _conn: Optional[IndexState] = None
-    _queries: dict[str, set[Location]] = field(default_factory=dict)
-    _files: Optional[frozenset[str]] = None
+    _conn: Optional[SuperConnection]
+    _responses: aio.Condition
 
-    _access: aio.Condition = field(default_factory=aio.Condition)
-    _waiters: dict[Request, int] = field(
-        default_factory=lambda: { Request.QUERY: 0, Request.FILES: 0 })
+    _waiters: dict[Request, int]
+    _queries: dict[str, set[Location]]
+    _files: Optional[frozenset[str]]
+
+    def __init__(self):
+        self._conn = None
+        self._responses = aio.Condition()
+
+        self._waiters = { Request.QUERY: 0, Request.FILES: 0 }
+        self._queries = dict()
+        self._files = None
 
 
-    async def listener(self, conn: IndexState):
+    async def listener(self, conn: SuperConnection):
         """
-        Loop listener that switches the receive action based on the 
-        request type
+        Listener that switches the receive action based on the 
+        request type, that runs until cancelled
         """
         self._conn = conn
         try:
-            reader, _ = self._conn.pair
+            reader, _ = self._conn.stream
             while True:
                 procedure = await Message[Procedure].read(reader)
                 request = procedure.request
@@ -73,12 +77,12 @@ class RequestState:
 
     async def _got_files(self, files: frozenset[str]):
         """ Actions for file request responses """
-        async with self._access:
+        async with self._responses:
             self._files = files
-            self._access.notify_all()
+            self._responses.notify_all()
 
-        async with self._access:
-            await self._access.wait_for(
+        async with self._responses:
+            await self._responses.wait_for(
                 lambda: self._waiters[Request.FILES] == 0)
 
             self._files = None
@@ -86,12 +90,12 @@ class RequestState:
 
     async def _got_hit(self, query: Query):
         """ Actions for query request responses """
-        async with self._access:
+        async with self._responses:
             self._queries[query.filename] = query.locations
-            self._access.notify_all()
+            self._responses.notify_all()
         
-        async with self._access:
-            await self._access.wait_for(
+        async with self._responses:
+            await self._responses.wait_for(
                 lambda: self._waiters[Request.QUERY] == 0)
 
             del self._queries[query.filename]
@@ -106,18 +110,18 @@ class RequestState:
             raise aio.InvalidStateError('Super connection not initialized')
 
         logging.info('trying to get files')
-        async with self._access:
+        async with self._responses:
             self._waiters[Request.FILES] += 1
 
             if self._waiters[Request.FILES] == 1: # make sure only one active request
                 async with self._conn.access:
-                    await self._conn.pair.request(Request.FILES)
+                    await self._conn.stream.request(Request.FILES)
                     logging.info('requested files')
 
-            files = await self._access.wait_for(lambda: self._files) 
+            files = await self._responses.wait_for(lambda: self._files) 
 
             self._waiters[Request.FILES] -= 1
-            self._access.notify_all()
+            self._responses.notify_all()
 
             return cast(frozenset[str], files) # should not be None
 
@@ -131,18 +135,18 @@ class RequestState:
         if not self._conn:
             raise aio.InvalidStateError('Super connection not initialized')
 
-        async with self._access:
+        async with self._responses:
             locs = None
             try:
                 self._waiters[Request.QUERY] += 1
 
                 if self._waiters[Request.QUERY] == 1:
                     async with self._conn.access:
-                        await self._conn.pair.request(
+                        await self._conn.stream.request(
                             Request.QUERY, filename=filename)
 
                 await aio.wait_for(
-                    self._access.wait_for(lambda: filename not in self._queries), 30)
+                    self._responses.wait_for(lambda: filename in self._queries), 30)
                 locs = self._queries[filename]
 
             except aio.TimeoutError:
@@ -150,7 +154,7 @@ class RequestState:
 
             finally:
                 self._waiters[Request.QUERY] -= 1
-                self._access.notify_all()
+                self._responses.notify_all()
 
             # make copy so modifications don't interfere
             return set(locs) if locs else set[Location]()
@@ -164,7 +168,7 @@ class WeakPeer:
     _index_start: Location
 
     # async state, not defined in init
-    _requests: RequestState
+    _requests: RequestsHandler
     _dir_update: aio.Event
 
     PROMPT = (
@@ -177,9 +181,9 @@ class WeakPeer:
     def __init__(
         self,
         port: int,
+        in_port: int,
         user: Optional[str] = None,
         address: Optional[str] = None,
-        in_port: Optional[int] = None,
         directory: Union[str, Path, None] = None,
         **_):
         """
@@ -203,9 +207,6 @@ class WeakPeer:
         else:
             in_host = socket.gethostbyaddr(address)[0]
 
-        if in_port is None:
-            in_port = self._port
-
         self._index_start = Location(in_host, in_port)
 
 
@@ -224,10 +225,10 @@ class WeakPeer:
         """
         # async sync state needs to be init from async context
         self._dir_update = aio.Event()
-        self._requests = RequestState()
+        self._requests = RequestsHandler()
 
         def to_upload(reader: aio.StreamReader, writer: aio.StreamWriter):
-            """ Indexer closure as a stream callback """
+            """ Weak peer closure as a stream callback """
             return self._peer_upload(StreamPair(reader, writer))
 
         try:
@@ -276,7 +277,7 @@ class WeakPeer:
 
 
 
-    async def _connect_super(self, host: str) -> IndexState:
+    async def _connect_super(self, host: str) -> SuperConnection:
         start = self._index_start
 
         logging.info(f'trying connection with super at {start}')
@@ -295,11 +296,11 @@ class WeakPeer:
         login = Login(self._user, host, self._port)
         await Message.write(in_pair.writer, login)
 
-        return IndexState(start, in_pair)
+        return SuperConnection(start, in_pair)
 
 
 
-    async def _update_dir(self, indexer: IndexState):
+    async def _update_dir(self, conn: SuperConnection):
         """
         Sends updated directory to indexer, should be the only place where
         files attr is updated in order to sync with indexer
@@ -327,9 +328,9 @@ class WeakPeer:
         try:
             while True:
                 await self._dir_update.wait()
-                async with indexer.access:
+                async with conn.access:
                     files = self.get_files()
-                    await indexer.pair.request(Request.UPDATE, files=files)
+                    await conn.stream.request(Request.UPDATE, files=files)
                     # should be only place where dir_update is cleared
                     self._dir_update.clear()
 
@@ -338,9 +339,9 @@ class WeakPeer:
 
 
 
-    async def _watch_connection(self, indexer: IndexState):
+    async def _watch_connection(self, conn: SuperConnection):
         """ Coroutine that completes when the indexer connection is closed """
-        reader, writer = indexer.pair
+        reader, writer = conn.stream
         try:
             while not reader.at_eof():
                 await aio.sleep(8) # TODO: make interval param
@@ -378,7 +379,8 @@ class WeakPeer:
         except Exception as e:
             logging.exception(e)
 
-        logging.info(f"{self._user} session ending")
+        finally:
+            logging.info(f"{self._user} session ending")
 
 
 
@@ -434,6 +436,7 @@ class WeakPeer:
                 logging.error(f'location for {picked} is in own peer')
             else:
                 logging.error(f"location for {picked} cannot be found")
+
             return
 
         # use a random peer target
@@ -514,6 +517,7 @@ class WeakPeer:
 
         # can have issues with different files having the same name
         if m := re.match(r'\)(\d+)\(', stem[::-1]):
+            # use dup modifier if it exists
             dup_mod = int(m[1])
             stem = stem[:-m.end()]
         else:
@@ -605,8 +609,7 @@ class WeakPeer:
 
             writer.close()
             await writer.wait_closed()
-
-        log.debug(f"disconnected")
+            log.debug(f"disconnected")
 
 
     async def _send_file(self, peer: StreamPair, filename: str, log: logging.Logger):

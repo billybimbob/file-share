@@ -51,14 +51,15 @@ class Procedure:
     Each Request value has various types of expected arguments to be
     passed with. Below specifies the expects args, with the left side
     of the pipe being the initiating request, and the right side is
-    the response type. N/A indicates that the request is not expected
-    to be received, and None indicates that no args are expected
+    the response type. The value after the :: indicates the expected
+    type, N/A indicates that the request is not expected to be received,
+    and None indicates that no args are expected
 
-    Expected arguments:
-        DOWNLOAD: filename - str | N/A
-        FILES: None | files - frozenset[str]
-        QUERY: query - Query or filename - str | query - Query
-        UPDATE: files - frozenset[str] | files - frozenset[str] or N/A
+    Expected Arguments:
+        DOWNLOAD: filename :: str | N/A
+        FILES: None | files :: frozenset[str]
+        QUERY: query :: Query or filename :: str | query :: Query
+        UPDATE: files :: frozenset[str] | files :: frozenset[str] or N/A
     """
     request: Request
     _args: tuple[Any, ...]
@@ -148,7 +149,6 @@ class Message(Generic[T]):
     def unwrap(self) -> T:
         """ Return the payload or raise it as a decoded exception """
         if isinstance(self._payload, Exception):
-            # potentially could have message of just random bytes
             raise self._payload
         else:
             return self._payload
@@ -277,6 +277,13 @@ def getpeerbystream(stream: Union[StreamPair, asyncio.StreamWriter]) -> tuple[st
         stream = stream.writer
 
     poss_info = stream.get_extra_info('peername')
+
+    if (poss_info is None
+        or len(poss_info) < 2
+        or not isinstance(poss_info[0], str)
+        or not isinstance(poss_info[1], int)):
+        raise RuntimeError('cannot get peer information')
+
     return poss_info[:2]
 
 
