@@ -24,7 +24,7 @@ from connection import (
 @dataclass(frozen=True)
 class WeakState:
     """ Weak peer connection state """
-    loc: Location
+    location: Location
     sender: StreamPair
     files: set[str] = field(default_factory=set)
     log: logging.Logger = field(default_factory=logging.getLogger)
@@ -33,7 +33,7 @@ class WeakState:
 @dataclass(init=False)
 class SuperState:
     """ Super peer connection state """
-    loc: Location
+    location: Location
     neighbors: list[int]
     receiver: Optional[StreamPair]
     sender: Optional[StreamPair]
@@ -46,7 +46,7 @@ class SuperState:
         if not neighbors:
             neighbors = list()
 
-        self.loc = Location(host, port)
+        self.location = Location(host, port)
         self.neighbors = neighbors
 
         self.receiver = None
@@ -109,7 +109,7 @@ class SuperPeer:
             state
             for id, state in zip(super_ids, supers)
             if id == self_id
-        ].pop()
+        ][0]
 
         self._queries = dict()
         self._weaks = dict()
@@ -133,7 +133,7 @@ class SuperPeer:
         if isinstance(super, SuperPeer):
             return f'{socket.gethostname()}:{super._port}'
         else:
-            return f'{super.loc[0]}:{super.loc[1]}'
+            return f'{super.location[0]}:{super.location[1]}'
 
 
     #region getters
@@ -158,7 +158,7 @@ class SuperPeer:
     def get_location(self, filename: str) -> set[Location]:
         """ Find the peer nodes associated with a file """
         locs = {
-            info.loc
+            info.location
             for info in self._weaks.values()
             if filename in info.files
         }
@@ -177,8 +177,7 @@ class SuperPeer:
             for id, st in self._supers.items()
             if (st.sender # should not be none at this point
                 and self._min_supers.has_connection(self_id, id)
-                and st.sender != src)
-        ]
+                and st.sender != src) ]
 
 
     def get_sender(self, login: Login) -> StreamPair:
@@ -246,7 +245,7 @@ class SuperPeer:
     async def _connect_supers(self, host: str):
         """ Connects to all specified super peers """
         async def connect_task(sup: SuperState):
-            loc = sup.loc
+            loc = sup.location
             conn = aio.create_task(aio.open_connection(loc.host, loc.port))
             fin, pend = await aio.wait({conn}, timeout=8)
 
@@ -320,7 +319,7 @@ class SuperPeer:
         while option := await ainput(SuperPeer.PROMPT):
             if option == '1':
                 weak_peers = '\n'.join(
-                    str(s.loc)
+                    str(s.location)
                     for s in self._weaks.values()
                     if not s.sender.writer.is_closing()
                 )
@@ -355,27 +354,48 @@ class SuperPeer:
         async def query(query: Query):
             """ Actions for super query requests """
             if query.is_hit:
-                if query.id not in self._queries:
-                    logging.error(f'hit for {query.id} does not exist')
-                    return
-
-                src = self._queries[query.id]
-                await self._requests.put(
-                    RequestCall(Request.QUERY, src, query=query)
-                )
-
+                await query_hit(query)
             else:
-                start = time()
-                self._queries[query.id] = self.get_sender(login)
-                await self._local_query(query)
+                await query_poll(query)
 
-                elapsed = time() - start
-                new_query = query.elapsed(elapsed)
-                await self._forward_query(new_query)
+
+        async def query_hit(hit: Query):
+            """ Actions for query hit requests """
+            if hit.id not in self._queries:
+                logging.error(f'hit for {hit.id} does not exist')
+                return
+
+            src = self._queries[hit.id]
+            await self._requests.put(
+                RequestCall(Request.QUERY, src, query=hit))
+
+
+        async def query_poll(poll: Query):
+            """ Actions for polling query requests """
+            if poll.id in self._queries:
+                logging.error(f'got a duplicate query')
+                return
+
+            if poll.alive_time <= 0:
+                logging.info(f'query {poll.id} has timed out')
+                return
+
+            # potential issue with readding an old query
+            start = time()
+            self._queries[poll.id] = self.get_sender(login)
+            await self._local_query(poll)
+
+            elapsed = time() - start
+            new_query = poll.elapsed(elapsed)
+            await self._forward_query(new_query)
 
 
         async def update(files: frozenset[str]):
             """ Actions for super update requests """
+            if len(self._remote_files[conn] - files) == 0:
+                logging.error(f"received an unnecessary update")
+                return
+
             sender = self.get_sender(login)
             self._remote_files[conn] = files
             await self._forward_update(sender, files)
@@ -433,6 +453,7 @@ class SuperPeer:
             weak = self._weaks[login.id]
             weak.files.clear()
             weak.files.update(files)
+
             await self._forward_update(conn, files)
             logging.info('finished updating')
 
@@ -441,9 +462,9 @@ class SuperPeer:
             """ Actions for weak files requests """
             logger.info(f'request for file list')
             files = self.get_files()
+            
             await self._requests.put(
-                RequestCall(Request.FILES, conn, files=files)
-            )
+                RequestCall(Request.FILES, conn, files=files))
 
         try:
             self._weaks[login.id] = WeakState(login.location, conn, log=logger)
@@ -492,10 +513,9 @@ class SuperPeer:
 
         if locs:
             src = self._queries[query.id]
-            query = Query(query.id, query.filename, _locations=locs)
+            hit = Query(query.id, query.filename, _locations=locs)
             await self._requests.put(
-                RequestCall(Request.QUERY, src, query=query)
-            )
+                RequestCall(Request.QUERY, src, query=hit))
 
         aio.create_task(alive_timer())
 
@@ -524,7 +544,7 @@ class SuperPeer:
         in the min span
         """
         def update_request(sender: StreamPair):
-            logging.info('forwarding update')
+            logging.info(f'forwarding update to {getpeerbystream(sender)}')
             return self._requests.put(
                 RequestCall(Request.UPDATE, sender, files=files))
 
@@ -539,17 +559,17 @@ class SuperPeer:
 
 
 
-def parse_json(path: Union[Path, str]) -> list[SuperState]:
+def parse_json(map: Union[Path, str], **_) -> list[SuperState]:
     """
     Read a json file as starting super states; the expected format
     is as an array of objects, where each object has a host, port,
     and neighbors attribute
     """
-    if isinstance(path, str):
-        path = Path(path)
+    if isinstance(map, str):
+        map = Path(map)
 
-    path = path.with_suffix('.json')
-    with open(path) as f:
+    map = map.with_suffix('.json')
+    with open(map) as f:
         # potential type errors
         items: list[dict[str, Any]] = json.load(f)
         return [SuperState(**item) for item in items]
@@ -589,11 +609,11 @@ if __name__ == "__main__":
 
     args = args.parse_args()
 
-    supers = parse_json(args.map)
     args = merge_config_args(args)
 
     init_log(**args)
 
+    supers = parse_json(**args)
     indexer = SuperPeer(supers=supers, **args)
     aio.run(indexer.start_server())
 

@@ -94,7 +94,7 @@ class Procedure:
             self_first: order of the positional and precedence of the keyword args
 
         Returns:
-            Result of the pass function
+            Result of the passed function
         """
         pos_args = (
             args + self._args
