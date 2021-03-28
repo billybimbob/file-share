@@ -43,11 +43,14 @@ class Vertex(Generic[T]):
 
     def __init__(self, value: T, *links: Link[T]):
         """
-        args:
-            value: any hashable value
-            links: a list of Links
+        Creates a vertex with given value and connected with the given links
+
         The passed in vertex will have its neighbors value updated as well 
         if undirected
+
+        Arguments:
+            value: any hashable value
+            links: a variable amount of Links
         """
         self._value = value
         self._links = list(links)

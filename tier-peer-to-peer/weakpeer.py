@@ -17,7 +17,7 @@ from functools import partial
 from pathlib import Path
 from time import time
 
-from connection import (
+from lib.connection import (
     CHUNK_SIZE,
     Location, Login, Message, Procedure, Query, Request, StreamPair,
     ainput, merge_config_args, version_check
@@ -27,7 +27,7 @@ from connection import (
 @dataclass(frozen=True)
 class SuperConnection:
     """ All information about the super server connection """
-    info: Location
+    location: Location
     stream: StreamPair
     access: aio.Lock = field(default_factory=aio.Lock)
 
@@ -59,7 +59,7 @@ class RequestsHandler:
         """
         self._conn = conn
         try:
-            reader, _ = self._conn.stream
+            reader = self._conn.stream.reader
             while True:
                 procedure = await Message[Procedure].read(reader)
                 request = procedure.request
@@ -123,7 +123,7 @@ class RequestsHandler:
             self._waiters[Request.FILES] -= 1
             self._responses.notify_all()
 
-            return cast(frozenset[str], files) # should not be None
+            return cast(frozenset[str], files) # guaranteed not be None
 
 
     async def wait_for_query(self, filename: str) -> set[Location]:
@@ -147,6 +147,7 @@ class RequestsHandler:
 
                 await aio.wait_for(
                     self._responses.wait_for(lambda: filename in self._queries), 30)
+
                 locs = self._queries[filename]
 
             except aio.TimeoutError:
@@ -165,7 +166,7 @@ class WeakPeer:
     _port: int
     _user: str
     _direct: Path
-    _index_start: Location
+    _super_start: Location
 
     # async state, not defined in init
     _requests: RequestsHandler
@@ -207,7 +208,7 @@ class WeakPeer:
         else:
             in_host = socket.gethostbyaddr(address)[0]
 
-        self._index_start = Location(in_host, in_port)
+        self._super_start = Location(in_host, in_port)
 
 
     def get_files(self) -> frozenset[str]:
@@ -254,15 +255,15 @@ class WeakPeer:
                 await server.start_serving()
 
                 session = aio.create_task(self._session())
-                conn = aio.create_task(self._watch_connection(super_peer))
+                watch = aio.create_task(self._watch_connection(super_peer))
 
-                await aio.wait([session, conn], return_when=aio.FIRST_COMPLETED)
+                await aio.wait([session, watch], return_when=aio.FIRST_COMPLETED)
 
                 sender.cancel()
                 listener.cancel()
 
                 if not session.done(): session.cancel()
-                if not conn.done(): conn.cancel()
+                if not watch.done(): watch.cancel()
 
             await server.wait_closed()
 
@@ -278,7 +279,8 @@ class WeakPeer:
 
 
     async def _connect_super(self, host: str) -> SuperConnection:
-        start = self._index_start
+        """ Establishes a connection with the super peer """
+        start = self._super_start
 
         logging.info(f'trying connection with super at {start}')
 
@@ -468,7 +470,8 @@ class WeakPeer:
         """ Client-side connection with any of the other peers """
         logging.debug(f"attempting connection to {target}")
 
-        fin, pend = await aio.wait({aio.open_connection(target.host, target.port)}, timeout=8)
+        conn = aio.create_task(aio.open_connection(target.host, target.port))
+        fin, pend = await aio.wait({conn}, timeout=8)
         for p in pend: p.cancel()
 
         if len(fin) == 0:
@@ -667,7 +670,7 @@ if __name__ == "__main__":
     args.add_argument("-a", "--address", default=None, help="ip address of the indexing server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--directory", default='', help="the client download folder")
-    args.add_argument("-i", "--in_port", type=int, default=8888, help="the port of the indexing server")
+    args.add_argument("-i", "--in-port", type=int, default=8888, help="the port of the super server")
     args.add_argument("-l", "--log", default='weak.log', help="the file to write log info to")
     args.add_argument("-p", "--port", type=int, default=8889, help="the port to listen for connections")
     args.add_argument("-u", "--user", help="username of the client connecting")

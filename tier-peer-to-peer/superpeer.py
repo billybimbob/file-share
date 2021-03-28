@@ -14,8 +14,8 @@ from argparse import ArgumentParser
 from pathlib import Path
 from time import time
 
-from topology import Graph
-from connection import (
+from lib.topology import Graph
+from lib.connection import (
     Location, Login, Message, Procedure, Query, Request, StreamPair,
     ainput, getpeerbystream, merge_config_args, version_check
 )
@@ -33,8 +33,9 @@ class WeakState:
 @dataclass(init=False)
 class SuperState:
     """ Super peer connection state """
-    location: Location
-    neighbors: list[int]
+    _location: Location
+    _neighbors: list[int]
+
     receiver: Optional[StreamPair]
     sender: Optional[StreamPair]
     log: logging.Logger
@@ -46,17 +47,24 @@ class SuperState:
         if not neighbors:
             neighbors = list()
 
-        self.location = Location(host, port)
-        self.neighbors = neighbors
+        self._location = Location(host, port)
+        self._neighbors = neighbors
 
         self.receiver = None
         self.sender = None
-
         self.log = default_logger(logging.getLogger())
+
+    @property 
+    def location(self):
+        return self._location
+
+    @property
+    def neighbors(self):
+        return self._neighbors
 
 
 class RequestCall:
-    """ Pending changes to update the a given peer's state """
+    """ Pending request to a given connection """
     _conn: StreamPair
     _args: dict[str, Any]
 
@@ -69,6 +77,7 @@ class RequestCall:
         return self._conn
 
     def __call__(self):
+        """ Sends the request to the connection stream """
         return self._conn.request(**self._args)
 
 
@@ -108,8 +117,7 @@ class SuperPeer:
         self_state = [
             state
             for id, state in zip(super_ids, supers)
-            if id == self_id
-        ][0]
+            if id == self_id ][0]
 
         self._queries = dict()
         self._weaks = dict()
@@ -142,8 +150,8 @@ class SuperPeer:
         """ Gets all the unique files accross all peers """
         locals = frozenset(
             file
-            for info in self._weaks.values()
-            for file in info.files
+            for state in self._weaks.values()
+            for file in state.files
         )
 
         remotes = frozenset(
@@ -155,12 +163,13 @@ class SuperPeer:
         return locals | remotes
 
 
-    def get_location(self, filename: str) -> set[Location]:
+    def get_location(
+        self, filename: str) -> set[Location]:
         """ Find the peer nodes associated with a file """
         locs = {
-            info.location
-            for info in self._weaks.values()
-            if filename in info.files
+            state.location
+            for state in self._weaks.values()
+            if filename in state.files
         }
 
         return locs
@@ -294,7 +303,6 @@ class SuperPeer:
                 pass
 
         requests = set[aio.Task[None]]()
-
         try:
             while True:
                 completed = { req for req in requests if req.done() }
@@ -352,7 +360,7 @@ class SuperPeer:
         logger = self._supers[login.id].log
 
         async def query(query: Query):
-            """ Actions for super query requests """
+            """ Actions for query requests from super peers """
             if query.is_hit:
                 await query_hit(query)
             else:
@@ -360,7 +368,7 @@ class SuperPeer:
 
 
         async def query_hit(hit: Query):
-            """ Actions for query hit requests """
+            """ Actions for query hit requests from super peers """
             if hit.id not in self._queries:
                 logging.error(f'hit for {hit.id} does not exist')
                 return
@@ -371,7 +379,7 @@ class SuperPeer:
 
 
         async def query_poll(poll: Query):
-            """ Actions for polling query requests """
+            """ Actions for polling query requests from super peers """
             if poll.id in self._queries:
                 logging.error(f'got a duplicate query')
                 return
@@ -391,8 +399,8 @@ class SuperPeer:
 
 
         async def update(files: frozenset[str]):
-            """ Actions for super update requests """
-            if len(self._remote_files[conn] - files) == 0:
+            """ Actions for update requests from super peers """
+            if self._remote_files[conn] == files:
                 logging.error(f"received an unnecessary update")
                 return
 
@@ -401,7 +409,7 @@ class SuperPeer:
             await self._forward_update(sender, files)
 
         try:
-            writer.write_eof() # do not use server for writing
+            writer.write_eof() # do not use this stream for writing
             self._supers[login.id].receiver = conn
 
             while procedure := await Message[Procedure].read(reader):
@@ -433,11 +441,12 @@ class SuperPeer:
         logger = default_logger(logging.getLogger(login.id))
 
         async def query(filename: str):
-            """ Actions for weak query requests """
+            """ Actions for query requests from weak peers """
             logger.info(f'query for {filename}')
             conn_info = getpeerbystream(conn)
             curr_time = time()
 
+            # not checks for multiple queries of the same file
             id = f'{conn_info[0]}:{conn_info[1]}:{filename}:{curr_time}'
             timeout = 30 # TODO: make param
             weak_query = Query(id, filename, timeout)
@@ -448,9 +457,13 @@ class SuperPeer:
 
 
         async def update(files: frozenset[str]):
-            """ Actions for weak update requests """
-            logger.info(f'update files')
+            """ Actions for update requests from weak peers """
             weak = self._weaks[login.id]
+            if weak.files == files:
+                logging.error(f"received an unnecessary update")
+                return
+
+            logger.info(f'updating files')
             weak.files.clear()
             weak.files.update(files)
 
@@ -459,7 +472,7 @@ class SuperPeer:
 
 
         async def files():
-            """ Actions for weak files requests """
+            """ Actions for files requests from weak peers """
             logger.info(f'request for file list')
             files = self.get_files()
             
