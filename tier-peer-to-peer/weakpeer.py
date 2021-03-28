@@ -284,16 +284,9 @@ class WeakPeer:
 
         logging.info(f'trying connection with super at {start}')
 
-        conn = aio.create_task(aio.open_connection(start.host, start.port))
-        fin, pend = await aio.wait({conn}, timeout=8)
-        for p in pend: p.cancel()
-
-        if len(fin) == 0:
-            raise aio.TimeoutError("Connection took to long")
-
-        logging.info(f'connection with super')
-        in_pair = fin.pop().result()
+        in_pair = await aio.open_connection(start.host, start.port)
         in_pair = StreamPair(*in_pair)
+        logging.info(f'connection with super')
 
         login = Login(self._user, host, self._port)
         await Message.write(in_pair.writer, login)
@@ -326,10 +319,10 @@ class WeakPeer:
                 pass
 
         checker = aio.create_task(check_dir())
-
         try:
             while True:
                 await self._dir_update.wait()
+
                 async with conn.access:
                     files = self.get_files()
                     await conn.stream.request(Request.UPDATE, files=files)
@@ -470,15 +463,7 @@ class WeakPeer:
         """ Client-side connection with any of the other peers """
         logging.debug(f"attempting connection to {target}")
 
-        conn = aio.create_task(aio.open_connection(target.host, target.port))
-        fin, pend = await aio.wait({conn}, timeout=8)
-        for p in pend: p.cancel()
-
-        if len(fin) == 0:
-            logging.error('connection attempt failed')
-            return
-
-        pair = fin.pop().result() # will only be one result
+        pair = await aio.open_connection(target.host, target.port)
         pair = StreamPair(*pair)
         reader, writer = pair
 

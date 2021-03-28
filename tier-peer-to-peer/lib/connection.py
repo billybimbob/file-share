@@ -237,7 +237,8 @@ class Login(NamedTuple):
 @dataclass(frozen=True)
 class Query:
     """
-    Information broadcasted to super peers for a file location
+    Information broadcasted to super peers for a file location, only one of
+    _alive_time and _locations should be specified
     """
     id: str
     filename: str
@@ -250,12 +251,13 @@ class Query:
 
     @property
     def is_hit(self):
-        return not self._alive_time and self._locations
+        return (self._alive_time is None
+            and self._locations is not None)
 
     @property
     def alive_time(self):
         """ Gets the alive time, only call if is_hit is False """
-        if not self._alive_time:
+        if self._alive_time is None:
             raise RuntimeError('Query is a hit type')
 
         return self._alive_time
@@ -263,7 +265,7 @@ class Query:
     @property
     def locations(self):
         """ Gets the locations, only call if is_hit is True """
-        if not self._locations:
+        if self._locations is None:
             raise RuntimeError('Query is not a hit type')
 
         return self._locations

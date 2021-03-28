@@ -1,0 +1,15 @@
+[
+    {
+        "host": null,
+        "port": 8889,
+        "neighbors": [1, 2]
+    }, {
+        "host": null,
+        "port": 8890,
+        "neighbors": [0, 2]
+    }, {
+        "host": null,
+        "port": 8891,
+        "neighbors": [0, 1]
+    }
+]

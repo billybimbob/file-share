@@ -255,20 +255,23 @@ class SuperPeer:
         """ Connects to all specified super peers """
         async def connect_task(sup: SuperState):
             loc = sup.location
-            conn = aio.create_task(aio.open_connection(loc.host, loc.port))
-            fin, pend = await aio.wait({conn}, timeout=8)
+            connected = False
+            fails, max_fails = 0, 5
 
-            for p in pend: p.cancel()
-            if len(fin) == 0:
-                raise aio.TimeoutError("Connection could not be established")
+            while not connected and fails < max_fails:
+                try:
+                    pair = await aio.open_connection(loc.host, loc.port)
+                    pair = StreamPair(*pair)
 
-            pair = fin.pop().result()
-            pair = StreamPair(*pair)
+                    login = Login(SuperPeer.id(self), host, self._port)
+                    await Message.write(pair.writer, login)
 
-            login = Login(SuperPeer.id(self), host, self._port)
-            await Message.write(pair.writer, login)
+                    sup.sender = pair
+                    connected = True
 
-            sup.sender = pair
+                except ConnectionRefusedError:
+                    fails += 1
+                    await aio.sleep(5) # TODO: make param
 
         await aio.gather(*[connect_task(sup) for sup in self._supers.values()])
 
@@ -335,7 +338,7 @@ class SuperPeer:
 
             elif option == '2':
                 super_peers = '\n'.join(
-                    str(s)
+                    str(s.location)
                     for s in self._supers.values()
                     if s.sender and not s.sender.writer.is_closing()
                 )
