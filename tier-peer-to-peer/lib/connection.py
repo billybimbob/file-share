@@ -56,10 +56,14 @@ class Procedure:
     and None indicates that no args are expected
 
     Expected Arguments:
-        DOWNLOAD: filename :: str | N/A
-        FILES: None | files :: frozenset[str]
-        QUERY: query :: Query or filename :: str | query :: Query
-        UPDATE: files :: frozenset[str] | files :: frozenset[str] or N/A
+        DOWNLOAD: filename :: str
+            | N/A
+        FILES: None
+            | files :: frozenset[str]
+        QUERY: query :: Query or filename :: str
+            | query :: Query
+        UPDATE: files :: frozenset[str] or update :: RemoteFiles
+            | update :: RemoteFiles or N/A
     """
     request: Request
     _args: tuple[Any, ...]
@@ -232,7 +236,7 @@ class Login(NamedTuple):
 #endregion
 
 
-#region query messaging across super peers
+#region messaging across super peers
 
 @dataclass(frozen=True)
 class Query:
@@ -269,6 +273,12 @@ class Query:
             raise RuntimeError('Query is not a hit type')
 
         return self._locations
+
+
+class RemoteFiles(NamedTuple):
+    """ Files that are local to another super peer """
+    id: str
+    files: frozenset[str]
 
 #endregion
 

@@ -1,0 +1,52 @@
+[
+    {
+        "host": null,
+        "port": 8889,
+        "neighbors": [1]
+    },
+    {
+        "host": null,
+        "port": 8890,
+        "neighbors": [0, 2]
+    },
+    {
+        "host": null,
+        "port": 8891,
+        "neighbors": [1, 3]
+    },
+    {
+        "host": null,
+        "port": 8892,
+        "neighbors": [2, 4]
+    },
+    {
+        "host": null,
+        "port": 8893,
+        "neighbors": [3, 5]
+    },
+    {
+        "host": null,
+        "port": 8894,
+        "neighbors": [4, 6]
+    },
+    {
+        "host": null,
+        "port": 8895,
+        "neighbors": [5, 7]
+    },
+    {
+        "host": null,
+        "port": 8896,
+        "neighbors": [6, 8]
+    },
+    {
+        "host": null,
+        "port": 8897,
+        "neighbors": [7, 9]
+    },
+    {
+        "host": null,
+        "port": 8898,
+        "neighbors": [8]
+    }
+]
