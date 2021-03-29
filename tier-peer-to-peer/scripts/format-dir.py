@@ -31,12 +31,14 @@ def rename_dir(dir: Union[str, Path], subdirs: bool):
     for old, new in zip(files, new_files):
         shutil.move(str(old), str(new))
 
-    if subdirs:
-        for p in path.iterdir():
-            if not p.is_dir():
-                continue 
+    if not subdirs:
+        return
 
-            rename_dir(p, subdirs)
+    for p in path.iterdir():
+        if not p.is_dir():
+            continue 
+
+        rename_dir(p, subdirs)
 
 
 if __name__ == "__main__":

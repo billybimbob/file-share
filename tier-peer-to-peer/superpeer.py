@@ -8,6 +8,7 @@ import logging
 import socket
 
 from dataclasses import dataclass, field
+from collections.abc import Iterable
 from typing import Any, Optional, Union
 
 from argparse import ArgumentParser
@@ -59,7 +60,7 @@ class SuperState:
         return self._location
 
     @property
-    def neighbors(self):
+    def neighbors(self) -> Iterable[int]:
         return self._neighbors
 
 
@@ -313,9 +314,9 @@ class SuperPeer:
                 if completed:
                     requests -= completed
 
-                logging.info('waiting for requests')
+                # logging.info('waiting for requests')
                 req_call = await self._requests.get()
-                logging.info('got a request')
+                # logging.info('got a request')
                 requests.add(
                     aio.create_task(request_task(req_call))
                 )
@@ -462,7 +463,7 @@ class SuperPeer:
         async def update(files: frozenset[str]):
             """ Actions for update requests from weak peers """
             weak = self._weaks[login.id]
-            if weak.files == files:
+            if weak.files == files and files:
                 logging.error(f"received an unnecessary update")
                 return
 
@@ -471,7 +472,6 @@ class SuperPeer:
             weak.files.update(files)
 
             await self._forward_update(conn, files)
-            logging.info('finished updating')
 
 
         async def files():
@@ -560,7 +560,6 @@ class SuperPeer:
         in the min span
         """
         def update_request(sender: StreamPair):
-            logging.info(f'forwarding update to {getpeerbystream(sender)}')
             return self._requests.put(
                 RequestCall(Request.UPDATE, sender, files=files))
 
@@ -593,7 +592,7 @@ def parse_json(map: Union[Path, str], **_) -> list[SuperState]:
 
 def init_log(log: str, **_):
     """ Specifies logging format and location """
-    log_path = Path(f'./{log}')
+    log_path = Path(f'./{log}').with_suffix('.log')
     log_path.parent.mkdir(exist_ok=True, parents=True)
     log_settings = {
         'format': "%(asctime)s.%(msecs)03d:%(levelname)s:%(name)s: %(message)s",
@@ -624,7 +623,6 @@ if __name__ == "__main__":
     args.add_argument("-m", "--map", help="the super peer structure json file map")
 
     args = args.parse_args()
-
     args = merge_config_args(args)
 
     init_log(**args)

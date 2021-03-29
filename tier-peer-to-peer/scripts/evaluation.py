@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import Any, Optional, Union
-from collections.abc import Iterable
+from asyncio.exceptions import CancelledError
+from typing import Any, NamedTuple, Optional, Union
+from collections.abc import Iterable, Sequence
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -27,8 +28,10 @@ LOGS = 'logs'
 #endregion
 
 CHUNK_SIZE = 1024
-PEER_PORT_BASE = 8889
+PEER_PORT_BASE = 9989
 
+
+#region dry run peers
 
 class PeerRun:
     """
@@ -52,7 +55,7 @@ class PeerRun:
             self.start_files = frozenset(
                 start_path
                 for start in starts
-                if (start_path := self.dir.joinpath(start)).exists())
+                if (start_path := self.dir.joinpath(start)).exists() )
         else:
             self.start_files = frozenset(self.dir.iterdir())
 
@@ -60,7 +63,6 @@ class PeerRun:
 def dry_run_peers(start_loc: str, **kwargs: Any):
     " Creates or resets directory structure with processes "
     start_files: Optional[dict[str, list[str]]] = None
-
     if start_loc:
         try:
             with open(start_loc, "r+") as f:
@@ -68,14 +70,7 @@ def dry_run_peers(start_loc: str, **kwargs: Any):
         except Exception:
             pass
 
-    if start_files is not None: # reset directory
-        peers = [
-            PeerRun(dir_name, starts=starts)
-            for dir_name, starts in start_files.items()
-        ]
-        reset_peers_path(peers)
-        
-    else: # create and store starting names
+    if start_files is None: # create and store starting names
         write_to = start_loc if start_loc else f'{PEERS}/starters'
         write_to = Path(write_to).with_suffix('.json')
 
@@ -83,11 +78,19 @@ def dry_run_peers(start_loc: str, **kwargs: Any):
 
         with open(write_to, 'w+') as f:
             json.dump(start_files, f)
+        
+    else: # reset directory
+        peers = [
+            PeerRun(dir_name, starts=starts)
+            for dir_name, starts in start_files.items()
+        ]
+        reset_peers_path(peers)
+
 
 
 def dry_create_peers(num_peers: int, file_size: str) -> dict[str, list[str]]:
     " Sets up peer directory structure without creating the processes "
-    label = f'{num_peers}c{file_size}f'
+    label = get_label(num_peers, file_size)
     src_dir = f'{SERVERS}/{file_size}'
 
     peers = list[PeerRun]()
@@ -104,21 +107,30 @@ def dry_create_peers(num_peers: int, file_size: str) -> dict[str, list[str]]:
         for p in peers
     }
 
+#endregion
 
-async def create_peers(num_peers: int, file_size: str, verbosity: int) -> Iterable[PeerRun]:
+
+#region weak peers
+
+async def create_peers(supers: Sequence[SuperRun], num_peers: int, file_size: str, verbosity: int) -> Iterable[PeerRun]:
     """ Creates a number of client processes """
-    label = f'{num_peers}c{file_size}f'
+    label = get_label(num_peers, file_size)
     src_dir = f'{SERVERS}/{file_size}'
 
+    async def get_super(id: int):
+        """ Selects a super peer port and init """
+        sup_port = supers[id % len(supers)].port
+        return await init_peer(label, sup_port, id, verbosity, src_dir)
+
     peers = await aio.gather(*[
-        init_peer(label, i, verbosity, src_dir)
-        for i in range(num_peers)
+        get_super(i) for i in range(num_peers)
     ])
 
     return peers
 
 
-async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRun:
+async def init_peer(
+    label: str, sup_port: int, id: int, verbosity: int, src_dir: str) -> PeerRun:
     """
     Starts a peer process, and also waits for a peer response, which should 
     indicate that the peer is ready to take in user input
@@ -131,7 +143,7 @@ async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRu
 
     peer = await aio.create_subprocess_exec(
         *shlex.split(
-            f"./weakpeer.py -c \"{CONFIGS}/eval-peer.ini\" -p {PEER_PORT_BASE + id} "
+            f"./weakpeer.py -p {PEER_PORT_BASE + id} -s {sup_port} "
             f"-d \"{peer_dir}\" -u \"{user}\" -l \"{log}\" -v {verbosity}"
         ),
         stdin=proc.PIPE,
@@ -139,9 +151,12 @@ async def init_peer(label: str, id: int, verbosity: int, src_dir: str) -> PeerRu
     )
 
     if peer.stdin:
-        peer.stdin.write('1\n'.encode())
-        _, pend = await aio.wait({peer.stdin.drain()}, timeout=5)
-        for p in pend: p.cancel()
+        try:
+            peer.stdin.write('1\n'.encode())
+            await aio.wait_for(peer.stdin.drain(), timeout=5)
+        except (aio.CancelledError, aio.TimeoutError):
+            pass
+
         await get_response(peer)
 
     return PeerRun(peer_dir, peer)
@@ -184,25 +199,6 @@ def reset_peers_path(peers: Iterable[PeerRun]):
                 os.remove(new)
 
 
-async def get_response(peer: proc.Process):
-    """ Tries to block until stdout has no more output """
-    if not peer.stdout:
-        print('cannot get response from peer')
-        return
-
-    try:
-        while True:
-            # might want to make wait interval as param
-            _, pend = await aio.wait({peer.stdout.read(CHUNK_SIZE)}, timeout=5)
-
-            for p in pend: p.cancel()
-            if len(pend) > 0: break
-
-    except aio.TimeoutError:
-        pass
-
-
-
 async def run_downloads(peers: Iterable[PeerRun], request: int):
     """ Passes input to the client processes to request downloads from the server """
     # does not account for the case where the are no files to download, should not happen
@@ -218,14 +214,38 @@ async def run_downloads(peers: Iterable[PeerRun], request: int):
             print('peer stdin is None')
             return
 
-        peer.process.stdin.write(client_input)
-        _, pend = await aio.wait({peer.process.stdin.drain()}, timeout=5)
-        for p in pend: p.cancel()
+        try:
+            peer.process.stdin.write(client_input)
+            await aio.wait_for(peer.process.stdin.drain(), timeout=5)
+        except (aio.CancelledError, aio.TimeoutError):
+            pass
 
         await get_response(peer.process)
 
     await aio.gather(*[ request_peer(p) for p in peers ])
 
+
+async def interact_peer(
+    sup_port: int, num_peers: int, file_size: str, verbosity: int):
+    """
+    Creates an extra peer that will connect to the first supers that can be communicated 
+    with the shell
+    """
+    label = get_label(num_peers, file_size)
+    user = 'interact'
+    log = f'{LOGS}/{label}/{user}.log'
+    peer_dir = f'{PEERS}/{file_size}/{user}'
+
+    Path(f'./{peer_dir}').mkdir(exist_ok=True, parents=True)
+
+    peer = await aio.create_subprocess_exec(
+        *shlex.split(
+            f"./weakpeer.py -p {PEER_PORT_BASE + num_peers + 1} -s {sup_port} "
+            f"-d \"{peer_dir}\" -u \"{user}\" -l \"{log}\" -v {verbosity}"
+        )
+    )
+
+    await peer.wait()
 
 
 async def stop_peers(peers: Iterable[PeerRun]):
@@ -237,59 +257,114 @@ async def stop_peers(peers: Iterable[PeerRun]):
         else:
             await peer.process.communicate('\n'.encode())
 
-
     await aio.gather(*[ stop(p) for p in peers ])
-
     reset_peers_path(peers)
 
+#endregion
 
 
-async def start_super(log: str) -> proc.Process:
+def get_label(num_peers: int, file_size: str):
+    """ Distinguishing label between different eval runs """
+    return f'{num_peers}c{file_size}f'
+
+
+async def get_response(peer: proc.Process):
+    """ Tries to block until stdout has no more output """
+    if not peer.stdout:
+        print('cannot get response from peer')
+        return
+
+    try:
+        while True:
+            # might want to make wait interval as param
+            await aio.wait_for(peer.stdout.read(CHUNK_SIZE), timeout=5)
+
+    except (aio.TimeoutError, CancelledError):
+        pass
+
+
+#region super peers
+
+class SuperRun(NamedTuple):
+    port: int
+    process: proc.Process
+
+
+async def start_supers(ports: Iterable[int], map: str, label: str) -> Sequence[SuperRun]:
     """
     Launches the server on a separate process with the specified log and directory
     """
-    # clear log content
-    if (Path(f'./{log}').exists()):
-        open(log, 'w').close()
+    servers = list[SuperRun]()
+    for i, port in enumerate(ports):
+        sup = f'super{i}'
+        log = f'{LOGS}/{label}/{sup}.log'
 
-    server = await aio.create_subprocess_exec(
-        *shlex.split(f"./indexer.py -c \"{CONFIGS}/eval-indexer.ini\" -l \"{log}\""),
-        stdin=proc.PIPE,
-        stdout=proc.PIPE
-    )
+        # clear log content
+        if (Path(f'./{log}').exists()):
+            open(log, 'w').close()
 
-    await get_response(server)
-    return server
+        server = await aio.create_subprocess_exec(
+            *shlex.split(f"./superpeer.py -p {port} -l \"{log}\" -m {map}"),
+            stdin=proc.PIPE,
+            stdout=proc.PIPE
+        )
+
+        await get_response(server)
+        servers.append(SuperRun(port, server))
+
+    return servers
 
 
-async def stop_indexer(indexer: proc.Process):
+async def stop_supers(supers: Iterable[SuperRun]):
     """ Sends input to all the server that should make it cleanly exit """
-    await indexer.communicate('\n'.encode())
+    await aio.gather(*[
+        sup.process.communicate('\n'.encode())
+        for sup in supers
+    ])
 
+#endregion
 
 
 async def run_cycle(
+    topology: str,
     num_peers: int,
     file_size: str,
     repeat: int,
     verbosity: int,
+    interactive: bool,
     dry_run: Optional[str]):
     """ Manages the creation, running, and killing of server and client procs """
-    label = f'{num_peers}c{file_size}f'
-    indexer_log = f'{LOGS}/{label}/indexer.log'
 
     if dry_run is not None:
         dry_run_peers(dry_run, num_peers=num_peers, file_size=file_size)
         return
 
-    indexer = await start_super(indexer_log)
-    peers = await create_peers(num_peers, file_size, verbosity)
+    ports = parse_ports(topology)
+    label = get_label(num_peers, file_size)
 
-    await run_downloads(peers, repeat)
+    supers = await start_supers(ports, topology, label)
+    peers = await create_peers(supers, num_peers, file_size, verbosity)
+
+    if interactive:
+        def_super = supers[0].port
+        await interact_peer(def_super, num_peers, file_size, verbosity)
+    else:
+        await run_downloads(peers, repeat)
 
     await stop_peers(peers)
-    await stop_indexer(indexer)
+    await stop_supers(supers)
 
+
+
+def parse_ports(map: Union[Path, str], **_) -> Iterable[int]:
+    """ Get all the ports as args in the given topology """
+    if isinstance(map, str):
+        map = Path(map)
+
+    map = map.with_suffix('.json')
+    with open(map) as f:
+        items: list[dict[str, Any]] = json.load(f)
+        return [item['port'] for item in items]
 
 
 if __name__ == "__main__":
@@ -299,16 +374,19 @@ if __name__ == "__main__":
     args = ArgumentParser(description="Runs various configurations for peer clients")
     args.add_argument("-d", "--dry-run", nargs="?", default=None, const='', help="run peer init without starting the processes; file path can be given to reset dir files")
     args.add_argument("-f", "--file-size", default='128', choices=['128', '512', '2k', '8k', '32k'], help="the size of each file downloaded")
-    # args.add_argument("-i", "--iteractive", action='store_true', help="")
+    args.add_argument("-i", "--interactive", action='store_true', help="creates an interactive peer to interface with the system")
+    args.add_argument("-m", "--map", required=True, help="the super network topology as a json path")
     args.add_argument("-n", "--num-peers", type=int, default=2, help="the number of concurrent clients")
     args.add_argument("-r", "--repeat", type=int, default=2, help="the amount of repeated runs")
     args.add_argument("-v", "--verbosity", type=int, default=10, choices=[0, 10, 20, 30, 40, 50], help="the logging verboseness, level corresponds to default levels")
     args = args.parse_args()
 
     aio.run(run_cycle(
+        args.map,
         args.num_peers,
         args.file_size,
         args.repeat,
         args.verbosity,
+        args.interactive,
         args.dry_run
     ))

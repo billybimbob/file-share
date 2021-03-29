@@ -182,7 +182,7 @@ class WeakPeer:
     def __init__(
         self,
         port: int,
-        in_port: int,
+        sup_port: int,
         user: Optional[str] = None,
         address: Optional[str] = None,
         directory: Union[str, Path, None] = None,
@@ -208,7 +208,7 @@ class WeakPeer:
         else:
             in_host = socket.gethostbyaddr(address)[0]
 
-        self._super_start = Location(in_host, in_port)
+        self._super_start = Location(in_host, sup_port)
 
 
     def get_files(self) -> frozenset[str]:
@@ -407,6 +407,9 @@ class WeakPeer:
             return
 
         picked = await self._select_file(files)
+        if picked is None:
+            print('invalid file entered')
+            return
 
         # query for loc
         start_time = time()
@@ -439,7 +442,7 @@ class WeakPeer:
         self._dir_update.set()
 
 
-    async def _select_file(self, fileset: Iterable[str]) -> str:
+    async def _select_file(self, fileset: Iterable[str]) -> Optional[str]:
         """ Take in user input to select a file from the given set """
         # sort might be slow
         files = sorted(fileset)
@@ -454,7 +457,7 @@ class WeakPeer:
                 choice = files[idx]
 
         if choice not in fileset:
-            print('invalid file entered')
+            return None
 
         return choice
 
@@ -633,7 +636,7 @@ class WeakPeer:
 
 def init_log(log: str, verbosity: int, **_):
     """ Specifies logging format and location """
-    log_path = Path(f'./{log}')
+    log_path = Path(f'./{log}').with_suffix('.log')
     log_path.parent.mkdir(exist_ok=True, parents=True)
     log_settings = {
         'format': "%(asctime)s.%(msecs)03d:%(levelname)s:%(name)s: %(message)s",
@@ -655,9 +658,9 @@ if __name__ == "__main__":
     args.add_argument("-a", "--address", default=None, help="ip address of the indexing server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--directory", default='', help="the client download folder")
-    args.add_argument("-i", "--in-port", type=int, default=8888, help="the port of the super server")
     args.add_argument("-l", "--log", default='weak.log', help="the file to write log info to")
-    args.add_argument("-p", "--port", type=int, default=8889, help="the port to listen for connections")
+    args.add_argument("-p", "--port", type=int, default=9989, help="the port to listen for connections")
+    args.add_argument("-s", "--sup-port", type=int, default=8889, help="the port of the super server")
     args.add_argument("-u", "--user", help="username of the client connecting")
     args.add_argument("-v", "--verbosity", type=int, default=10, choices=[0, 10, 20, 30, 40, 50], help="the logging verboseness, level corresponds to default levels")
 
