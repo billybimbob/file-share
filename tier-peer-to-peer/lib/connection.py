@@ -8,7 +8,7 @@ import struct
 import sys
 
 from collections.abc import Awaitable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
     Any, Callable, Generic, NamedTuple, Optional, TypeVar, Union, cast
@@ -275,10 +275,11 @@ class Query:
         return self._locations
 
 
-class RemoteFiles(NamedTuple):
+@dataclass
+class RemoteFiles:
     """ Files that are local to another super peer """
     id: str
-    files: frozenset[str]
+    files: frozenset[str] = field(default_factory=frozenset)
 
 #endregion
 

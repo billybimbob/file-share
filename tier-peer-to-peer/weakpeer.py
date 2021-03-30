@@ -109,7 +109,6 @@ class RequestsHandler:
         if not self._conn:
             raise aio.InvalidStateError('Super connection not initialized')
 
-        logging.info('trying to get files')
         async with self._responses:
             self._waiters[Request.FILES] += 1
 
@@ -151,7 +150,7 @@ class RequestsHandler:
                 locs = self._queries[filename]
 
             except aio.TimeoutError:
-                pass
+                logging.error(f'request for {filename} timed out')
 
             finally:
                 self._waiters[Request.QUERY] -= 1
@@ -269,8 +268,11 @@ class WeakPeer:
 
         except Exception as e:
             logging.exception(e)
-            for task in aio.all_tasks():
-                task.cancel()
+            try:
+                for task in aio.all_tasks():
+                    task.cancel()
+            except aio.CancelledError:
+                pass
 
         finally:
             logging.debug("disconnected from indexing server")
@@ -381,6 +383,7 @@ class WeakPeer:
 
     async def _system_files(self) -> list[str]:
         """ Fetches all the files in the system based on indexer """
+        logging.debug('get system files')
         files = await self._requests.wait_for_files()
         return sorted(files)
 
@@ -397,27 +400,32 @@ class WeakPeer:
         """
         Queries the indexer, prompts the user, then fetches file from peer
         """
+        logging.debug('getting download options')
         start_time = time()
         files = await self._system_files()
         get_elapsed = time() - start_time
 
         if len(files) == 0:
             print('There are no files that can be downloaded')
-            logging.exception("no files can be downloaded")
+            logging.error("no files can be downloaded")
             return
 
         picked = await self._select_file(files)
         if picked is None:
             print('invalid file entered')
+            logging.error('picked file is not valid')
+            logging.info(
+                f"response time for getting files took {get_elapsed:.4f} secs")
+
             return
 
-        # query for loc
+        logging.debug(f'query for {picked}')
         start_time = time()
         peers = await self._requests.wait_for_query(picked)
 
         query_elapsed = time() - start_time
         elapsed = (get_elapsed + query_elapsed) / 2
-        logging.info(f"query for {picked} took {elapsed:.4f} secs")
+        logging.info(f"average response for {picked} took {elapsed:.4f} secs")
 
         self_loc = socket.gethostname(), self._port
         at_self = True
@@ -450,6 +458,8 @@ class WeakPeer:
 
         print('\n'.join(options))
         choice = await ainput("enter file to download: ")
+
+        logging.info(f'{len(files)} options, {choice=}')
 
         if choice.isnumeric():
             idx = int(choice)-1

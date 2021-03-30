@@ -23,6 +23,7 @@ import sys
 
 CONFIGS = 'configs'
 SERVERS = 'servers'
+SUPERS = 'supers'
 PEERS = 'peers'
 LOGS = 'logs'
 
@@ -97,7 +98,7 @@ def dry_create_peers(num_peers: int, file_size: str) -> dict[str, list[str]]:
     peers = list[PeerRun]()
     for i in range(num_peers):
         user = f'peer{i}'
-        log = f'{LOGS}/{label}/{user}.log'
+        log = f'{LOGS}/{label}/{PEERS}/{user}.log'
         peer_dir = f'{PEERS}/{Path(src_dir).name}/{i}'
 
         init_peer_paths(user, log, peer_dir, src_dir)
@@ -141,7 +142,7 @@ async def init_peer(
     indicate that the peer is ready to take in user input
     """
     user = f'peer{id}'
-    log = f'{LOGS}/{label}/{user}.log'
+    log = f'{LOGS}/{label}/{PEERS}/{user}.log'
     peer_dir = f'{PEERS}/{Path(src_dir).name}/{id}'
 
     init_peer_paths(user, log, peer_dir, src_dir)
@@ -156,11 +157,8 @@ async def init_peer(
     )
 
     if peer.stdin:
-        try:
-            peer.stdin.write('1\n'.encode())
-            await aio.wait_for(peer.stdin.drain(), timeout=5)
-        except (aio.CancelledError, aio.TimeoutError):
-            pass
+        peer.stdin.write('1\n'.encode())
+        await peer.stdin.drain()
 
         await get_response(peer)
 
@@ -213,13 +211,9 @@ async def run_downloads(
     # should not happen
     if num_queries <= 0:
         return
-    elif num_queries >= len(peers):
+        
+    if num_queries >= len(peers):
         raise ValueError('too many query peers specified')
-
-    rand_peers = [
-        random.randint(0, len(peers)-1)
-        for _ in range(num_queries)
-    ]
 
     min_amt = min(len(p.start_files) for p in peers)
     req_range = min_amt * len(peers)
@@ -233,25 +227,30 @@ async def run_downloads(
             print('peer stdin is None')
             return
 
-        try:
-            num_requests = (
-                tot_requests // num_queries
-                if run < num_queries else
-                tot_requests // num_queries + tot_requests % num_queries)
+        num_requests = (
+            tot_requests // num_queries
+            if run < num_queries else
+            tot_requests // num_queries + tot_requests % num_queries)
 
-            client_input = ( # not great, missing the bottom ones
-                f'2\n{random.randint(0, req_range)}\n'
-                for _ in range(num_requests))
-            client_input = ''.join(client_input)
-            client_input = client_input.encode()
+        if req_range < num_requests:
+            client_input = [random.randint(1, req_range) for _ in range(num_requests)]
+        else:
+            client_input = random.sample(range(1, req_range), num_requests)
 
-            peer.process.stdin.write(client_input)
-            await aio.wait_for(peer.process.stdin.drain(), timeout=5)
+        # print(f'input for {run} is {client_input}')
+        client_input = [f'2\n{pick}\n' for pick in client_input]
+        client_input = ''.join(client_input)
+        client_input = client_input.encode()
 
-        except (aio.CancelledError, aio.TimeoutError):
-            pass
+        peer.process.stdin.write(client_input)
 
+        await peer.process.stdin.drain()
         await get_response(peer.process)
+        await aio.sleep(5) # add extra time just in case
+
+
+    rand_peers = random.sample(range(0, len(peers)), num_queries)
+    print(f'query for peers {rand_peers}')
 
     await aio.gather(*[
         request_peer(peers[idx], i+1)
@@ -266,7 +265,7 @@ async def interact_peer(
     interfaced with the terminal
     """
     user = 'interact'
-    log = f'{LOGS}/{label}/{user}.log'
+    log = f'{LOGS}/{label}/{PEERS}/{user}.log'
     peer_dir = f'{PEERS}/{file_size}/{user}'
 
     peer_path = Path(f'./{peer_dir}')
@@ -308,7 +307,7 @@ async def get_response(peer: proc.Process):
     try:
         while True:
             # might want to make wait interval as param
-            await aio.wait_for(peer.stdout.read(CHUNK_SIZE), timeout=5)
+            await aio.wait_for(peer.stdout.read(CHUNK_SIZE), timeout=6)
 
     except (aio.TimeoutError, aio.CancelledError):
         pass
@@ -329,7 +328,7 @@ async def start_supers(ports: Iterable[int], map: str) -> Sequence[SuperRun]:
     servers = list[SuperRun]()
     for i, port in enumerate(ports):
         sup = f'super{i}'
-        log = f'{LOGS}/{label}/{sup}.log'
+        log = f'{LOGS}/{label}/{SUPERS}/{sup}.log'
 
         # clear log content
         if (Path(f'./{log}').exists()):

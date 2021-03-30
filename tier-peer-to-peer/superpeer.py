@@ -56,6 +56,7 @@ class SuperState:
 
         self.receiver = None
         self.sender = None
+
         self.log = default_logger(logging.getLogger())
 
     @property 
@@ -95,6 +96,7 @@ class SuperPeer:
     _port: int
     _queries: dict[str, Union[StreamPair, SuperState]]
 
+    _neighbors: frozenset[str]
     _supers: dict[str, SuperState]
     _weaks: dict[str, WeakState]
     _min_supers: Graph[str]
@@ -117,19 +119,26 @@ class SuperPeer:
         """
         self._port = max(1, port)
 
+        self_id = SuperPeer.id(self)
         super_ids = [SuperPeer.id(state) for state in supers]
-        for id, state in zip(super_ids, supers):
-            state.log = default_logger(logging.getLogger(id))
 
         self._queries = dict()
         self._weaks = dict()
-        self._supers = { id: state for id, state in zip(super_ids, supers) }
+        self._supers = {
+            id: state
+            for id, state in zip(super_ids, supers)
+            if id != self_id
+        }
+
+        for id, state in self._supers.items():
+            state.log = default_logger(logging.getLogger(id))
 
         super_map = {
             id: [super_ids[n] for n in state.neighbors]
             for id, state in zip(super_ids, supers)
         }
 
+        self._neighbors = frozenset(super_map[self_id])
         self._min_supers = Graph.from_map(super_map).min_span()
 
 
@@ -161,8 +170,7 @@ class SuperPeer:
         return locals | remotes
 
 
-    def get_location(
-        self, filename: str) -> set[Location]:
+    def get_location(self, filename: str) -> set[Location]:
         """ Find the peer nodes associated with a file """
         locs = {
             state.location
@@ -180,11 +188,13 @@ class SuperPeer:
         """
         self_id = SuperPeer.id(self)
         ex_supers = set(ex.sender for ex in exclude)
+        neighbors = [ (n, self._supers[n]) for n in self._neighbors ]
+
         return [
             st.sender
-            for id, st in self._supers.items()
-            if (st.sender
-                and self._min_supers.has_connection(self_id, id)
+            for id, st in neighbors
+            if (self._min_supers.has_connection(self_id, id)
+                and st.sender
                 and st.sender not in ex_supers) ]
 
     #endregion
@@ -227,7 +237,7 @@ class SuperPeer:
                 await server.start_serving()
                 # make sure to serve before connects, else will be deadlocks
                 await self._connect_supers(host)
-                await self._session()
+                await aio.create_task(self._session())
 
                 caller.cancel()
 
@@ -235,22 +245,30 @@ class SuperPeer:
 
         except Exception as e:
             logging.exception(e)
-            for task in aio.all_tasks():
-                task.cancel()
+            try:
+                for task in aio.all_tasks():
+                    task.cancel()
+            except aio.CancelledError:
+                pass
 
         finally:
-            logging.info("index server stopped")
+            await self._close_supers()
+            logging.info("super server stopped")
 
 
     async def _connect_supers(self, host: str):
         """ Connects to all specified super peers """
-        async def connect_task(sup: SuperState):
-            loc = sup.location
-            connected = False
-            fails, max_fails = 0, 10
+        num_conns = len(self._neighbors)
+        raised = False
 
+        async def connect(sup: SuperState):
+            """ Single attempt to connect to the specified super """
             try:
-                while not connected:
+                loc = sup.location
+                connected = False
+                fails, max_fails = 0, num_conns * 3 # mod of 3 was from testing
+
+                while not connected and fails < max_fails:
                     try:
                         pair = await aio.open_connection(loc.host, loc.port)
                         pair = StreamPair(*pair)
@@ -264,22 +282,44 @@ class SuperPeer:
 
                     except ConnectionRefusedError:
                         fails += 1
-                        if fails < max_fails:
-                            await aio.sleep(5) # TODO: make param
-                        else:
-                            raise ConnectionError(
-                                f'could not connect to {loc}')
+                        await aio.sleep(10) # TODO: make param
+
+                if not connected and not raised:
+                    raise ConnectionError(f'could not connect to {loc}')
 
             except aio.CancelledError:
                 pass
 
         conns = aio.gather(
-            *[ connect_task(sup) for sup in self._supers.values() ])
+            *[ connect(self._supers[n]) for n in self._neighbors ])
         try:
             await conns
-        except Exception as e:
+        except Exception:
+            raised = True
             conns.cancel()
-            raise e
+
+
+    async def _close_supers(self):
+        """ Close all sending connections """
+        async def close(sup: SuperState):
+            try:
+                sender = sup.sender
+                if sender is None:
+                    sup.log.error('sender is already closed')
+                    return
+
+                sender.writer.close()
+                await sender.writer.wait_closed()
+                sup.sender = None
+
+            except Exception as e:
+                sup.log.exception(e)
+                raise e
+        
+        await aio.gather(
+            *[ close(self._supers[n]) for n in self._neighbors ],
+            return_exceptions=True
+        )
 
 
     async def _request_caller(self):
@@ -309,6 +349,7 @@ class SuperPeer:
 
             except aio.CancelledError:
                 pass
+
             except Exception as e:
                 logging.exception(f'{getpeerbystream(conn)}: {e}')
 
@@ -320,9 +361,7 @@ class SuperPeer:
                 if completed:
                     requests -= completed
 
-                # logging.info('waiting for requests')
                 req_call = await self._requests.get()
-                # logging.info('got a request')
                 requests.add(
                     aio.create_task(request_task(req_call))
                 )
@@ -346,9 +385,11 @@ class SuperPeer:
             elif option == '2':
                 super_peers = '\n'.join(
                     str(s.location)
-                    for s in self._supers.values()
-                    if s.sender and not s.sender.writer.is_closing()
-                )
+                    for id, s in self._supers.items()
+                    if (id in self._neighbors
+                        and s.sender 
+                        and not s.sender.writer.is_closing()))
+
                 print(f'The super peers connected are: \n{super_peers}\n')
 
             elif option == '3':
@@ -383,12 +424,15 @@ class SuperPeer:
                 logger.error(f'hit for {hit.id} does not exist')
                 return
 
-            logger.info('received query hit')
+            logger.info(f'received query hit for {hit.filename}')
             src = self._queries[hit.id]
+
             if isinstance(src, SuperState):
                 src = src.sender
 
-            if src is None: return
+            if src is None:
+                logger.error('src is None')
+                return
 
             await self._requests.put(
                 RequestCall(Request.QUERY, src, query=hit))
@@ -400,15 +444,11 @@ class SuperPeer:
                 logger.error(f'got a duplicate query')
                 return
 
-            sender = self._supers[login.id].sender
-            if sender is None:
-                logger.error(f'sender is None')
-                return
-
             # potential issue with readding an old query
-            logger.info('received query')
+            logger.info(f'received query for {poll.filename}')
             start = time()
-            self._queries[poll.id] = sender
+            self._queries[poll.id] = self._supers[login.id]
+
             await self._local_query(poll)
 
             elapsed = time() - start
@@ -424,7 +464,7 @@ class SuperPeer:
         async def update(update: RemoteFiles):
             """ Actions for update requests from super peers """
             if update.id not in self._supers:
-                logger.error('super is not valid')
+                logger.error('update id is not valid')
                 return
 
             src = self._supers[update.id]
@@ -441,8 +481,8 @@ class SuperPeer:
 
 
         try:
-            writer.write_eof() # do not use this stream for writing
             self._supers[login.id].receiver = conn
+            writer.write_eof() # do not use this stream for writing
             logger.info(f'connected')
 
             while procedure := await Message[Procedure].read(reader):
@@ -457,15 +497,25 @@ class SuperPeer:
                 else:
                     raise ValueError('Did not get an expected request')
 
+        except aio.IncompleteReadError:
+            pass
+
         except Exception as e:
             logger.exception(e)
 
         finally:
             logger.debug('ending connection')
-            writer.close()
-            del self._supers[login.id]
 
-            await writer.wait_closed() # delete super state
+            writer.close()
+            sup = self._supers[login.id]
+            sup.files.clear()
+            sup.receiver = None
+
+            remote = RemoteFiles(login.id) # update the files are cleared
+            upstream = self._supers[login.id]
+            await self._forward_update(remote, upstream)
+
+            await writer.wait_closed()
 
 
 
@@ -494,15 +544,20 @@ class SuperPeer:
             """ Actions for update requests from weak peers """
             weak = self._weaks[login.id]
             if weak.files == files and files:
-                logging.error(f"received an unnecessary update")
+                logger.error(f"received an unnecessary update")
                 return
 
             logger.info('updating files')
             weak.files.clear()
             weak.files.update(files)
 
-            update = RemoteFiles(SuperPeer.id(self), files)
-            await self._forward_update(update)
+            # might be a lot of files being sent with each update
+            all_files = frozenset(
+                file
+                for state in self._weaks.values()
+                for file in state.files)
+
+            await self._forward_update(all_files)
 
 
         async def files():
@@ -542,7 +597,11 @@ class SuperPeer:
         finally:
             logger.debug('ending connection')
             writer.close()
+
+            # update weak files, weak files invalidated
             del self._weaks[login.id]
+            await self._forward_update(None)
+
             await writer.wait_closed() # delete super state
 
 
@@ -592,12 +651,21 @@ class SuperPeer:
         ])
 
 
-    async def _forward_update(self, update: RemoteFiles, *exclude: SuperState):
+    async def _forward_update(
+        self, 
+        update: Union[RemoteFiles, frozenset[str], None],
+        *exclude: SuperState):
         """
         Passes along a received update to all neighboring supers, if they are
         in the min span
         """
+        if update is None:
+            update = RemoteFiles(SuperPeer.id(self))
+        elif isinstance(update, frozenset):
+            update = RemoteFiles(SuperPeer.id(self), update)
+
         def update_request(sender: StreamPair):
+            # update should always be RemoteFiles at this point
             return self._requests.put(
                 RequestCall(Request.UPDATE, sender, update=update))
 
