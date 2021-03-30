@@ -145,7 +145,7 @@ class RequestsHandler:
                             Request.QUERY, filename=filename)
 
                 await aio.wait_for(
-                    self._responses.wait_for(lambda: filename in self._queries), 30)
+                    self._responses.wait_for(lambda: filename in self._queries), 5)
 
                 locs = self._queries[filename]
 
@@ -359,7 +359,11 @@ class WeakPeer:
     async def _session(self):
         """ Cli for peer """
         try:
+            cmd_count = 0
             while request := await ainput(WeakPeer.PROMPT):
+                logging.info(f'request # {cmd_count}')
+                cmd_count += 1
+
                 if request == '1':
                     await self._list_system()
 
@@ -428,17 +432,16 @@ class WeakPeer:
         logging.info(f"average response for {picked} took {elapsed:.4f} secs")
 
         self_loc = socket.gethostname(), self._port
-        at_self = True
+        have_options = len(peers) > 0
         target = None
 
-        while at_self and len(peers) > 0:
+        while target is None and len(peers) > 0:
             peer = peers.pop()
-            at_self = self_loc == peer
-            if not at_self:
+            if peer != self_loc:
                 target = peer
 
         if target is None:
-            if at_self:
+            if have_options:
                 logging.error(f'location for {picked} is in own peer')
             else:
                 logging.error(f"location for {picked} cannot be found")

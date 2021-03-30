@@ -223,10 +223,6 @@ async def run_downloads(
             print('no process was given')
             return 
 
-        if peer.process.stdin is None:
-            print('peer stdin is None')
-            return
-
         num_requests = (
             tot_requests // num_queries
             if run < num_queries else
@@ -242,11 +238,10 @@ async def run_downloads(
         client_input = ''.join(client_input)
         client_input = client_input.encode()
 
-        peer.process.stdin.write(client_input)
-
-        await peer.process.stdin.drain()
-        await get_response(peer.process)
-        await aio.sleep(5) # add extra time just in case
+        # peer process will end after this method call
+        # potential issue with requesting peers racing against each other
+        # TODO: think of a better solution to fix race condition
+        await peer.process.communicate(client_input)
 
 
     rand_peers = random.sample(range(0, len(peers)), num_queries)
@@ -256,6 +251,8 @@ async def run_downloads(
         request_peer(peers[idx], i+1)
         for i, idx in enumerate(rand_peers)
     ])
+
+    print('all query peers have stopped')
 
 
 async def interact_peer(
@@ -288,7 +285,7 @@ async def stop_peers(peers: Iterable[PeerRun]):
         """ Checked stop communication """
         if peer.process is None:
             print('process is None')
-        else:
+        elif peer.process.returncode is None:
             await peer.process.communicate('\n'.encode())
 
     await aio.gather(*[ stop(p) for p in peers ])
@@ -373,7 +370,7 @@ async def run_cycle(
 
     global label
     map_path = Path(f'./{map}')
-    label = f'{map_path.stem}{num_peers}w{query_peers}q'
+    label = f'{map_path.stem}/{num_peers}w{query_peers}q'
     ports = parse_ports(map)
 
     supers = await start_supers(ports, map)

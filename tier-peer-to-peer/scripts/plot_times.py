@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import Any, Callable, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 TIMES = 'times'
 
-def read_download_times(log: Path) -> list[float]:
+def read_response_times(log: Path) -> list[float]:
     """ Parse log files to extract client download times """
     times: list[float] = []
     with open(log) as f:
@@ -23,23 +23,7 @@ def read_download_times(log: Path) -> list[float]:
                 continue
 
             toks = line.split()
-            if 'received' in toks:
-                times.append(float(toks[-2]))
-
-    return times
-
-
-def read_query_times(log: Path) -> list[float]:
-    """ Parse log files to extract client query times """
-    times: list[float] = []
-    with open(log) as f:
-        for line in f:
-            line = line.rstrip()
-            if not line.endswith('secs'):
-                continue
-
-            toks = line.split()
-            if 'query' in toks:
+            if 'response' in toks:
                 times.append(float(toks[-2]))
 
     return times
@@ -47,55 +31,40 @@ def read_query_times(log: Path) -> list[float]:
 
 class Label(NamedTuple):
     """ Runtime classification Label, handles string parsing """
-    clients: int
-    file_type: str
-
-    def file_size(self) -> int:
-        if match := re.search(r'\d+', self.file_type):
-            val = int(match[0])
-            if self.file_type[match.end()][0] == 'k':
-                val += 1000
-            return val
-        else:
-            return 0
-
+    queries: int
 
     def __str__(self):
-        return f'{self.clients} Peers,{self.file_type}B Files'
+        return f'{self.queries} Query Clients'
 
 
     @staticmethod
     def from_key(label_info: str) -> Optional[Label]:
         """ Tries to parse a Label from a json key """
-        halves = label_info.split(",")
+        toks = label_info.split()
         try:
-            left, right = halves[0], halves[1]
-            return Label(
-                int(left.split()[0]),
-                right.split()[0]
-            )
+            return Label(int(toks[0]))
         except:
             return None
 
     
     @staticmethod
-    def sort(entry: tuple[str, float]) -> tuple[int, int]:
+    def sort(entry: tuple[str, float]) -> int:
         """ Extracts the numerical sortable values from the json key """
         label = Label.from_key(entry[0])
         if label is None:
-            return (0, 0)
+            return 0
         else:
-            return (label.clients, label.file_size())
+            return label.queries
 
 
     @staticmethod
     def get(log: Path) -> Optional[str]:
         """ Parses the log file name to get the configuration settings """
-        match = re.search(r'([0-9]+)c([0-9]+[a-zA-z]*)f', log.name)
+        match = re.search(r'[\d]+w(\d+)q', log.name)
         if not match:
             return None
 
-        return str(Label(int(match[1]), match[2]))
+        return str(Label(int(match[1])))
 
 
 def as_time_json(filename: str) -> Path:
@@ -182,31 +151,39 @@ def graph_avgs(name: str, avgfile: str, graphpath: Optional[str]):
 
 
 def parse_and_graph(
-    logs: str, name: str, times: str, averages: Optional[str], graph: Optional[str], queries: bool):
+    logs: str, name: str, times: str, averages: Optional[str], graph: Optional[str]):
     """ Runs all the steps of parsing, recording, and graphing a given log file """
     if (timepath := as_time_json(times)).exists():
         open(timepath, 'w').close()
 
     logspath = Path(logs)
-    get_times = read_download_times if not queries else read_query_times
-    read_times(logspath, times, get_times)
+    read_times(logspath, times)
 
     averages = record_avgs(times, averages)
     graph_avgs(name, averages, graph)
 
 
 
-def read_times(logs: Path, time_store: str, get_times: Callable[[Path], list[float]]):
+def read_times(logs: Path, time_store: str, top_parent: Optional[Path]=None):
     """ Extract the time values for a file and write them to a json """
+    if top_parent is None:
+        top_parent = logs
+
     for log in logs.iterdir():
         if log.is_dir():
-            read_times(log, time_store, get_times)
+            read_times(log, time_store, top_parent)
 
         elif log.suffix == '.log':
-            times = get_times(log)
-            label = Label.get(log.parent)
+            times = read_response_times(log)
+            default_label = log.parent.name
+            label = None
+
+            while label is None and log.parent != top_parent:
+                label = Label.get(log.parent)
+                log = log.parent
+
             if label is None:
-                label = log.parent.name
+                label = default_label
 
             record_times(time_store, label, times)
 
@@ -218,7 +195,6 @@ if __name__ == "__main__":
     args.add_argument("-g", "--graph", help="location where to save the graph")
     args.add_argument("-l", "--logs", required=True, help="the location of the logs to parse and graph")
     args.add_argument("-n", "--name", default='Average Download Times', help="the name of the graph")
-    args.add_argument("-q", "--queries", action='store_true', help="record query times instead of downloads")
     args.add_argument("-t", "--times", default="times.json", help="the json file where the times will be recorded")
     args = args.parse_args()
 
