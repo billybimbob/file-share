@@ -8,6 +8,7 @@ import logging
 import re
 import socket
 
+from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Optional, Union, cast
@@ -24,6 +25,58 @@ from lib.connection import (
 )
 
 
+class Timer:
+    """ A waitable, resetable timer """
+    _time_alive: int
+    _fired: aio.Event = field(default_factory=aio.Event)
+    _timer: Optional[aio.Task[None]] = None
+
+    def __init__(self, time_alive: int):
+        self._time_alive = time_alive
+        self._fired = aio.Event()
+        self._timer = None
+
+        self._fired.set()
+
+    def start(self):
+        """
+        Starts the timer, also clears and restarts the timer if this method 
+        is called while already running
+        """
+        if self._timer:
+            self._timer.cancel()
+
+        self._timer = aio.create_task(self._run_timer())
+
+
+    async def _run_timer(self):
+        """ Method to run as a task to time and raise events """
+        try:
+            self._fired.clear()
+            await aio.sleep(self._time_alive)
+        
+        except aio.CancelledError:
+            pass
+
+        finally:
+            self._fired.set()
+            self._timer = None
+
+
+    def is_stopped(self):
+        """ True if the timer is not running """
+        return self._fired.is_set()
+
+
+    async def wait(self):
+        """
+        Wait until the timer is finished, calling start again will reset the
+        timer, and prolong the wait
+        """
+        await self._fired.wait()
+
+
+
 @dataclass(frozen=True)
 class SuperConnection:
     """ All information about the super server connection """
@@ -36,20 +89,30 @@ class RequestsHandler:
     """
     Synchronized handler for all received procedures from the super peer 
     """
-    _conn: Optional[SuperConnection]
-    _responses: aio.Condition
 
-    _waiters: dict[Request, int]
-    _queries: dict[str, set[Location]]
-    _files: Optional[frozenset[str]]
+    @dataclass
+    class QueryWaiter:
+        """ Waiting state for query requests """
+        locs: aio.Queue[set[Location]] = field(default_factory=aio.Queue)
+        timer: Timer = field(default_factory=lambda: Timer(5))
+
+    @dataclass
+    class FileWaiter:
+        """ Waiting state for file requests """
+        response: aio.Condition = field(default_factory=aio.Condition)
+        files: Optional[frozenset[str]] = None
+        num_waiters: int = 0
+
+
+    _conn: Optional[SuperConnection]
+    _queries: defaultdict[str, QueryWaiter]
+    _filewait: FileWaiter
+
 
     def __init__(self):
         self._conn = None
-        self._responses = aio.Condition()
-
-        self._waiters = { Request.QUERY: 0, Request.FILES: 0 }
-        self._queries = dict()
-        self._files = None
+        self._queries = defaultdict(RequestsHandler.QueryWaiter)
+        self._filewait = RequestsHandler.FileWaiter()
 
 
     async def listener(self, conn: SuperConnection):
@@ -77,28 +140,28 @@ class RequestsHandler:
 
     async def _got_files(self, files: frozenset[str]):
         """ Actions for file request responses """
-        async with self._responses:
-            self._files = files
-            self._responses.notify_all()
+        filewait = self._filewait
 
-        async with self._responses:
-            await self._responses.wait_for(
-                lambda: self._waiters[Request.FILES] == 0)
+        async with filewait.response:
+            filewait.files = files
+            filewait.response.notify_all()
 
-            self._files = None
+            # wait for should release the lock
+            await filewait.response.wait_for(
+                lambda: filewait.num_waiters == 0)
+
+            self._filewait.files = None
 
 
     async def _got_hit(self, query: Query):
         """ Actions for query request responses """
-        async with self._responses:
-            self._queries[query.filename] = query.locations
-            self._responses.notify_all()
-        
-        async with self._responses:
-            await self._responses.wait_for(
-                lambda: self._waiters[Request.QUERY] == 0)
+        querywait = self._queries[query.filename]
 
-            del self._queries[query.filename]
+        if querywait.timer.is_stopped():
+            logging.info(f'no waiters for {query.filename}')
+            return
+
+        await querywait.locs.put(query.locations)
 
 
     async def wait_for_files(self) -> frozenset[str]:
@@ -109,55 +172,73 @@ class RequestsHandler:
         if not self._conn:
             raise aio.InvalidStateError('Super connection not initialized')
 
-        async with self._responses:
-            self._waiters[Request.FILES] += 1
+        filewait = self._filewait
 
-            if self._waiters[Request.FILES] == 1: # make sure only one active request
+        async with filewait.response:
+            self._filewait.num_waiters += 1
+
+            # make sure only one active request
+            if self._filewait.num_waiters == 1:
                 async with self._conn.access:
                     await self._conn.stream.request(Request.FILES)
                     logging.info('requested files')
 
-            files = await self._responses.wait_for(lambda: self._files) 
+            await filewait.response.wait_for(
+                lambda: filewait.files is not None) 
 
-            self._waiters[Request.FILES] -= 1
-            self._responses.notify_all()
+            # guaranteed not be None
+            files = cast(frozenset[str], filewait.files)
+            filewait.num_waiters -= 1
+            filewait.response.notify_all()
 
-            return cast(frozenset[str], files) # guaranteed not be None
+            return files
 
 
-    async def wait_for_query(self, filename: str) -> set[Location]:
+    async def wait_for_query(
+        self, filename: str, new_req: bool=True) -> Optional[set[Location]]:
         """
-        Sends and then waits for a query request response; like the above function,
-        simultaneous queries for the same filename converge to the same
-        request-and-response cycle
+        Sends and then waits for a query request response for the given file;
+        a new request is only sent to the super peer if new_req is True
         """
         if not self._conn:
             raise aio.InvalidStateError('Super connection not initialized')
 
-        async with self._responses:
-            locs = None
-            try:
-                self._waiters[Request.QUERY] += 1
+        if new_req:
+            async with self._conn.access:
+                logging.info(f'request for {filename}')
+                await self._conn.stream.request(
+                    Request.QUERY, filename=filename)
 
-                if self._waiters[Request.QUERY] == 1:
-                    async with self._conn.access:
-                        await self._conn.stream.request(
-                            Request.QUERY, filename=filename)
+        waiter = self._queries[filename]
 
-                await aio.wait_for(
-                    self._responses.wait_for(lambda: filename in self._queries), 5)
+        async def auto_clear():
+            """ Removes all remaining location responses when timer ends """
+            logging.info(f'clearer start waiting for {filename}')
+            await waiter.timer.wait()
+            logging.info(f'timer done for {filename}, cleaning up files')
 
-                locs = self._queries[filename]
+            while not waiter.locs.empty():
+                waiter.locs.get_nowait()
 
-            except aio.TimeoutError:
-                logging.error(f'request for {filename} timed out')
+        if waiter.timer.is_stopped():
+            aio.create_task(auto_clear())
+                    
+        waiter.timer.start()
+        timer = aio.create_task(waiter.timer.wait())
+        get_locs = aio.create_task(waiter.locs.get())
 
-            finally:
-                self._waiters[Request.QUERY] -= 1
-                self._responses.notify_all()
+        await aio.wait([timer, get_locs], return_when=aio.FIRST_COMPLETED)
 
-            # make copy so modifications don't interfere
-            return set(locs) if locs else set[Location]()
+        if get_locs.done():
+            logging.info(f'got result for {filename}')
+            timer.cancel()
+            return get_locs.result()
+
+        else:
+            logging.error(f'request for {filename} timed out')
+            get_locs.cancel()
+            return None
+
 
 
 class WeakPeer:
@@ -405,50 +486,50 @@ class WeakPeer:
         Queries the indexer, prompts the user, then fetches file from peer
         """
         logging.debug('getting download options')
+
         start_time = time()
         files = await self._system_files()
-        get_elapsed = time() - start_time
+        elapsed = time() - start_time
+
+        logging.info(f"response time for getting files took {elapsed:.4f} secs")
 
         if len(files) == 0:
             print('There are no files that can be downloaded')
-            logging.error("no files can be downloaded")
             return
 
         picked = await self._select_file(files)
+
         if picked is None:
             print('invalid file entered')
-            logging.error('picked file is not valid')
-            logging.info(
-                f"response time for getting files took {get_elapsed:.4f} secs")
-
             return
 
-        logging.debug(f'query for {picked}')
-        start_time = time()
-        peers = await self._requests.wait_for_query(picked)
-
-        query_elapsed = time() - start_time
-        elapsed = (get_elapsed + query_elapsed) / 2
-        logging.info(f"average response for {picked} took {elapsed:.4f} secs")
-
-        self_loc = socket.gethostname(), self._port
-        have_options = len(peers) > 0
+        self_loc = Location(socket.gethostname(), self._port)
+        timed_out = False
         target = None
+        retry = False
 
-        while target is None and len(peers) > 0:
-            peer = peers.pop()
-            if peer != self_loc:
-                target = peer
+        while not any([target, timed_out]):
+            start_time = time()
+            peers = await self._requests.wait_for_query(picked, not retry)
+            elapsed = time() - start_time
 
-        if target is None:
-            if have_options:
-                logging.error(f'location for {picked} is in own peer')
-            else:
-                logging.error(f"location for {picked} cannot be found")
+            logging.info(f"query {picked} took {elapsed:.4f} secs")
+            timed_out = peers is None
 
+            while target is None and peers:
+                # use a random peer target
+                peer = peers.pop()
+                if peer != self_loc:
+                    target = peer
+
+            retry = True
+            if target is None and not timed_out:
+                logging.info('received query was self, retrying')
+
+        if target is None: # must have timed out
+            logging.error(f"location for {picked} cannot be found")
             return
 
-        # use a random peer target
         await self._peer_download(picked, target)
         self._dir_update.set()
 

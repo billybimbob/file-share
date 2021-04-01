@@ -219,6 +219,7 @@ async def run_downloads(
     req_range = min_amt * len(peers)
 
     async def request_peer(peer: PeerRun, run: int):
+        """ Request commands ran on each selected peer """
         if peer.process is None:
             print('no process was given')
             return 
@@ -228,14 +229,14 @@ async def run_downloads(
             if run < num_queries else
             tot_requests // num_queries + tot_requests % num_queries)
 
-        if req_range < num_requests:
+        if req_range <= num_requests:
             client_input = [random.randint(1, req_range) for _ in range(num_requests)]
         else:
             client_input = random.sample(range(1, req_range), num_requests)
 
         # print(f'input for {run} is {client_input}')
         client_input = [f'2\n{pick}\n' for pick in client_input]
-        client_input = ''.join(client_input)
+        client_input = ''.join(client_input) + '\n' # last \n to exit
         client_input = client_input.encode()
 
         # peer process will end after this method call
@@ -338,6 +339,9 @@ async def start_supers(ports: Iterable[int], map: str) -> Sequence[SuperRun]:
         )
 
         await get_response(server)
+        await aio.sleep(2)
+        # not fully verification server is set up
+        # TODO: better sync primitive for server set up
         servers.append(SuperRun(port, server))
 
     return servers
@@ -376,15 +380,20 @@ async def run_cycle(
     supers = await start_supers(ports, map)
     peers = await create_peers(supers, num_peers, file_size, verbosity)
 
-    queries = [ run_downloads(peers, query_peers, requests) ]
-    if interactive:
-        queries.append(
-            interact_peer(supers[0].port, num_peers, file_size, verbosity))
+    try:
+        queries = [ run_downloads(peers, query_peers, requests) ]
+        if interactive:
+            queries.append(
+                interact_peer(supers[0].port, num_peers, file_size, verbosity))
 
-    await aio.gather(*queries)
+        await aio.gather(*queries)
 
-    await stop_peers(peers)
-    await stop_supers(supers)
+    except Exception as e:
+        raise e
+
+    finally:
+        await stop_peers(peers)
+        await stop_supers(supers)
 
 
 

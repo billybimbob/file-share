@@ -445,7 +445,7 @@ class SuperPeer:
                 return
 
             # potential issue with readding an old query
-            logger.info(f'received query for {poll.filename}')
+            logger.info(f'received query for {poll.id}')
             start = time()
             self._queries[poll.id] = self._supers[login.id]
 
@@ -532,7 +532,7 @@ class SuperPeer:
 
             # not checks for multiple queries of the same file
             id = f'{conn_info[0]}:{conn_info[1]}:{filename}:{curr_time}'
-            timeout = 30 # TODO: make param
+            timeout = 5 # TODO: make param
             weak_query = Query(id, filename, timeout)
 
             self._queries[weak_query.id] = conn
@@ -620,6 +620,7 @@ class SuperPeer:
         if locs:
             src = self._queries[query.id]
             if isinstance(src, SuperState):
+                src.log.info(f'got a hit for {query.id}')
                 src = src.sender
 
             if src is None: return
