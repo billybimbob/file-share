@@ -28,15 +28,14 @@ from lib.connection import (
 class Timer:
     """ A waitable, resetable timer """
     _time_alive: int
-    _fired: aio.Event = field(default_factory=aio.Event)
-    _timer: Optional[aio.Task[None]] = None
+    _fired: aio.Event
+    _timer: Optional[aio.Task[None]]
 
     def __init__(self, time_alive: int):
         self._time_alive = time_alive
         self._fired = aio.Event()
         self._timer = None
 
-        self._fired.set()
 
     def start(self):
         """
@@ -52,26 +51,27 @@ class Timer:
     async def _run_timer(self):
         """ Method to run as a task to time and raise events """
         try:
-            self._fired.clear()
             await aio.sleep(self._time_alive)
+            self._fired.set()
+            self._timer = None
         
         except aio.CancelledError:
+            # should only be cancelled from start
             pass
 
         finally:
-            self._fired.set()
-            self._timer = None
+            self._fired.clear()
 
 
     def is_stopped(self):
         """ True if the timer is not running """
-        return self._fired.is_set()
+        return self._timer is None
 
 
     async def wait(self):
         """
-        Wait until the timer is finished, calling start again will reset the
-        timer, and prolong the wait
+        Wait until the timer fires; calling start again will reset the timer,
+        and prolong the wait
         """
         await self._fired.wait()
 
@@ -94,7 +94,7 @@ class RequestsHandler:
     class QueryWaiter:
         """ Waiting state for query requests """
         locs: aio.Queue[set[Location]] = field(default_factory=aio.Queue)
-        timer: Timer = field(default_factory=lambda: Timer(5))
+        timer: Timer = field(default_factory=lambda: Timer(5)) # TODO: make interval param
 
     @dataclass
     class FileWaiter:
@@ -107,7 +107,6 @@ class RequestsHandler:
     _conn: Optional[SuperConnection]
     _queries: defaultdict[str, QueryWaiter]
     _filewait: FileWaiter
-
 
     def __init__(self):
         self._conn = None
@@ -181,7 +180,7 @@ class RequestsHandler:
             if self._filewait.num_waiters == 1:
                 async with self._conn.access:
                     await self._conn.stream.request(Request.FILES)
-                    logging.info('requested files')
+                    logging.info('sent request for files')
 
             await filewait.response.wait_for(
                 lambda: filewait.files is not None) 
@@ -205,7 +204,7 @@ class RequestsHandler:
 
         if new_req:
             async with self._conn.access:
-                logging.info(f'request for {filename}')
+                logging.info(f'sent request for {filename}')
                 await self._conn.stream.request(
                     Request.QUERY, filename=filename)
 
@@ -213,12 +212,13 @@ class RequestsHandler:
 
         async def auto_clear():
             """ Removes all remaining location responses when timer ends """
-            logging.info(f'clearer start waiting for {filename}')
+            logging.info(f'clearer started waiting for {filename}')
             await waiter.timer.wait()
             logging.info(f'timer done for {filename}, cleaning up files')
 
             while not waiter.locs.empty():
                 waiter.locs.get_nowait()
+
 
         if waiter.timer.is_stopped():
             aio.create_task(auto_clear())
