@@ -8,7 +8,6 @@ import struct
 import sys
 
 from collections.abc import Awaitable
-from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
     Any, Callable, Generic, NamedTuple, Optional, TypeVar, Union, cast
@@ -55,14 +54,14 @@ class Procedure:
     and None indicates that no args are expected
 
     Expected Arguments:
-        DOWNLOAD: filename :: str
+        DOWNLOAD: filename :: File.Chunk
             | N/A
         FILES: None
             | files :: frozenset[str]
-        QUERY: query :: Query or filename :: str
-            | query :: Query
-        UPDATE: files :: frozenset[str] or update :: RemoteFiles
-            | update :: RemoteFiles or N/A
+        QUERY: filename :: str
+            | response :: Response
+        UPDATE: files :: frozenset[File.Data]
+            | N/A
     """
 
     class Args:
@@ -238,7 +237,6 @@ class Login(NamedTuple):
     id: str
     host: str
     port: int
-    is_super: bool = False
 
     @property
     def location(self) -> Location:
@@ -247,52 +245,25 @@ class Login(NamedTuple):
 #endregion
 
 
-#region messaging across super peers
+class File:
+    """ Namespace for certain classes """
 
-@dataclass(frozen=True)
-class Query:
-    """
-    Information broadcasted to super peers for a file location, only one of
-    _alive_time and _locations should be specified
-    """
-    id: str
-    filename: str
-    _alive_time: Optional[float] = None
-    _locations: Optional[set[Location]] = None
+    class Data(NamedTuple):
+        """ File name and it's total file size """
+        name: str
+        size: int
 
-    def elapsed(self, time_change: float) -> Query:
-        """ Creates an updated query, with the alive_time updated """
-        return Query(self.id, self.filename, self.alive_time - time_change)
-
-    @property
-    def is_hit(self):
-        return (self._alive_time is None
-            and self._locations is not None)
-
-    @property
-    def alive_time(self):
-        """ Gets the alive time, only call if is_hit is False """
-        if self._alive_time is None:
-            raise RuntimeError('Query is a hit type')
-
-        return self._alive_time
-
-    @property
-    def locations(self):
-        """ Gets the locations, only call if is_hit is True """
-        if self._locations is None:
-            raise RuntimeError('Query is not a hit type')
-
-        return self._locations
+    class Chunk(NamedTuple):
+        name: str
+        offset: int
+        size: int
 
 
-@dataclass(frozen=True)
-class RemoteFiles:
-    """ Files that are local to another super peer """
-    id: str
-    files: frozenset[str] = field(default_factory=frozenset)
+class Response(NamedTuple):
+    """ Query response from the indexer node """
+    file: File.Data
+    locations: frozenset[Location]
 
-#endregion
 
 
 def getpeerbystream(stream: Union[StreamPair, asyncio.StreamWriter]) -> tuple[str, int]:

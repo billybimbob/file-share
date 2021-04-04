@@ -222,8 +222,7 @@ class SuperPeer:
         try:
             host = socket.gethostname()
             server = await aio.start_server(
-                to_receiver, host, self._port, start_serving=False
-            )
+                to_receiver, host, self._port, start_serving=False)
 
             async with server:
                 if not server.sockets:
@@ -336,8 +335,7 @@ class SuperPeer:
             try:
                 async with usage_check:
                     await usage_check.wait_for(
-                        lambda: conn not in used_conns
-                    )
+                        lambda: conn not in used_conns)
                     used_conns.add(conn)
 
                 await req_call()
