@@ -54,7 +54,7 @@ class Procedure:
     and None indicates that no args are expected
 
     Expected Arguments:
-        DOWNLOAD: filename :: File.Chunk
+        DOWNLOAD: chunk :: File.Chunk
             | N/A
         FILES: None
             | files :: frozenset[str]
@@ -254,6 +254,7 @@ class File:
         size: int
 
     class Chunk(NamedTuple):
+        """ File request for download and upload """
         name: str
         offset: int
         size: int
@@ -266,7 +267,8 @@ class Response(NamedTuple):
 
 
 
-def getpeerbystream(stream: Union[StreamPair, asyncio.StreamWriter]) -> tuple[str, int]:
+def getpeerbystream(
+    stream: Union[StreamPair, asyncio.StreamWriter]) -> tuple[str, int]:
     """ Adds type checks to get_extra_info method for Transport """
     if isinstance(stream, StreamPair):
         stream = stream.writer

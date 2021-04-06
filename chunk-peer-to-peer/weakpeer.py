@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio as aio
 import hashlib
+from io import FileIO
 import logging
 import re
 import socket
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Optional, Union, cast
 
@@ -167,6 +168,7 @@ class WeakPeer:
     _port: int
     _user: str
     _direct: Path
+    _chunk_size: int # TODO: add to init
     _super_start: Location
 
     # async state, not defined in init
@@ -425,27 +427,25 @@ class WeakPeer:
         start_time = time()
         response = await self._requests.wait_for_query(picked)
         elapsed = time() - start_time
+
         logging.info(f"query {picked} took {elapsed:.4f} secs")
 
-        peers = set(response.locations)
-
         self_loc = Location(socket.gethostname(), self._port)
-        target = None
+        not_self = frozenset(
+            loc for loc in response.locations if loc != self_loc)
 
-        while all([not target, peers]):
-            # use a random peer target
-            peer = peers.pop()
-            if peer != self_loc:
-                target = peer
-
-
-        if target is None: # must have timed out
-            logging.error(f"location for {picked} cannot be found")
+        if len(not_self) == 0:
+            logging.error(f"location for {picked} is only self")
             return
 
-        # TODO: split file into chunks
-        await self._peer_download(picked, target, response.file.size)
+        target_map = self._split_to_chunks(response)
+
+        await aio.gather(*[
+            self._peer_download(target, *chunks)
+            for target, chunks in target_map.items() ])
+
         self._dir_update.set()
+
 
 
     async def _select_file(self, fileset: Iterable[str]) -> Optional[str]:
@@ -470,8 +470,47 @@ class WeakPeer:
         return choice
 
 
+
+    def _split_to_chunks(
+        self,
+        response: Response) -> Mapping[Location, Iterable[File.Chunk]]:
+        """ Divides a response into location chunk pairings """
+        num_chunks = response.file.size // self._chunk_size
+        remaining = response.file.size % self._chunk_size
+
+        chunks = [
+            File.Chunk(
+                name = response.file.name,
+                offset = i * self._chunk_size,
+                size = self._chunk_size )
+            for i in range(num_chunks) ]
+
+        chunks.append( # add leftover that is not a full chunk
+            File.Chunk(
+                name = response.file.name,
+                offset = num_chunks * self._chunk_size,
+                size = remaining))
+
+        # don't filter for self location, should be done before
+        locations = list(response.locations)
+        chunk_targets = defaultdict[Location, list[File.Chunk]](list)
+
+        for i, chunk in enumerate(chunks):
+            loc = locations[i % len(locations)]
+            chunk_targets[loc].append(chunk)
+
+        return chunk_targets
+
+
+
     async def _peer_download(self, target: Location, *chunks: File.Chunk):
         """ Client-side connection with any of the other peers """
+        if target == Location(socket.gethostname(), self._port):
+            raise ValueError('location specified is self')
+
+        if not all(c.name == chunks[0].name for c in chunks):
+            raise ValueError('all chunk names must be the same')
+
         logging.debug(f"attempting connection to {target}")
 
         pair = await aio.open_connection(target.host, target.port)
@@ -479,7 +518,6 @@ class WeakPeer:
         reader, writer = pair
 
         log = logging.getLogger()
-
         try:
             await Message.write(writer, self._user)
             user = await Message[str].read(reader)
@@ -487,7 +525,9 @@ class WeakPeer:
             log = logging.getLogger(user)
             log.debug("connected")
 
-            await self._receive_file_retries(pair, log, *chunks)
+            await aio.gather(*[
+                self._receive_file_retries(pair, chunk, log)
+                for chunk in chunks ])
 
         except Exception as e:
             logging.exception(e)
@@ -503,14 +543,12 @@ class WeakPeer:
 
 
     async def _receive_file_retries(
-        self, peer: StreamPair, log: logging.Logger, *chunks: File.Chunk):
+        self, peer: StreamPair, chunk: File.Chunk, log: logging.Logger):
         """
         Runs multiple attempts to download a file from the server if needed
         """
-        filename = chunks[0].name
-        if not all(c.name == filename for c in chunks):
-            raise ValueError('all chunk names must be the same')
-
+        # TODO: modify to use chunks
+        filename = chunk.name
         start_time = time()
 
         filepath = self._direct.joinpath(filename)
@@ -532,16 +570,22 @@ class WeakPeer:
         got_file = False
         num_tries = 0
         tot_read = 0
+        
+        with open(filepath, 'r+b') as f:
+            # TODO: make tries param
+            while not got_file and num_tries < 5:
 
-        while not got_file and num_tries < 5: # TODO: make param
-            got_file, amt_read = await peer.request(
-                Request.DOWNLOAD,
-                filename=filename,
-                receiver=partial(self._receive_file, filepath)
-            )
-            # await self._receive_file(filepath, reader)
-            num_tries += 1
-            tot_read += amt_read
+                got_file, amt_read = await peer.request(
+                    Request.DOWNLOAD,
+                    chunk = chunk,
+                    receiver = partial(
+                        self._receive_file,
+                        file_ptr = f,
+                        offset = chunk.offset,
+                        read_limit = chunk.size ))
+
+                num_tries += 1
+                tot_read += amt_read
 
         elapsed = time() - start_time
         log.info(f"successfully got file")
@@ -550,30 +594,34 @@ class WeakPeer:
 
 
 
-    async def _receive_file(self, filepath: Path, reader: aio.StreamReader) -> tuple[bool, int]:
-        """ Used by the client side to download and verify correctness of download """
+    async def _receive_file(
+        self,
+        file_ptr: FileIO,
+        offset: int,
+        read_limit: int,
+        reader: aio.StreamReader) -> tuple[bool, int]:
+        """
+        Used by the client side to download and verify correctness of download
+        """
         checksum_passed = False
         amt_read = 0
 
         # expect the checksum to be sent first
         checksum = await Message[bytes].read(reader)
 
-        with open(filepath, 'w+b') as f:
-            filesize = await Message[int].read(reader)
+        while amt_read < read_limit:
+            # no messages since each file chunk is part of same "message"
+            chunk = await reader.read(CHUNK_SIZE)
+            file_ptr.write(chunk)
+            amt_read += len(chunk)
 
-            while amt_read < filesize:
-                # no messages since each file chunk is part of same "message"
-                chunk = await reader.read(CHUNK_SIZE)
-                f.write(chunk)
-                amt_read += len(chunk)
+        file_ptr.seek(offset)
+        local_checksum = hashlib.md5()
+        for line in file_ptr:
+            local_checksum.update(line)
 
-            f.seek(0)
-            local_checksum = hashlib.md5()
-            for line in f:
-                local_checksum.update(line)
-
-            local_checksum = local_checksum.digest()
-            checksum_passed = local_checksum == checksum
+        local_checksum = local_checksum.digest()
+        checksum_passed = local_checksum == checksum
 
         return checksum_passed, amt_read
 

@@ -11,10 +11,9 @@ from typing import Any
 
 from argparse import ArgumentParser
 from pathlib import Path
-from time import time
 
 from lib.connection import (
-    Location, Login, Message, Procedure, Response, Request, StreamPair,
+    File, Location, Login, Message, Procedure, Response, Request, StreamPair,
     ainput, getpeerbystream, merge_config_args, version_check
 )
 
@@ -24,7 +23,7 @@ class WeakState:
     """ Weak peer connection state """
     location: Location
     sender: StreamPair
-    files: set[str] = field(default_factory=set)
+    files: set[File.Data] = field(default_factory=set)
     log: logging.Logger = field(default_factory=logging.getLogger)
 
 
@@ -49,7 +48,6 @@ class RequestCall:
 class SuperPeer:
     """ Super peer node """
     _port: int
-    _queries: dict[str, StreamPair]
     _weaks: dict[str, WeakState]
 
     # async state, not defined in init
@@ -68,30 +66,28 @@ class SuperPeer:
         the server, run the function start_server
         """
         self._port = max(1, port)
-        self._queries = dict()
         self._weaks = dict()
 
 
     #region getters
 
-    def get_files(self) -> frozenset[str]:
+    def get_files(self) -> frozenset[File.Data]:
         """ Gets all the unique files accross all peers """
-        locals = frozenset(
+        files = frozenset(
             file
             for state in self._weaks.values()
             for file in state.files
         )
 
-        return locals
+        return files
 
 
-    def get_location(self, filename: str) -> set[Location]:
+    def get_location(self, file: File.Data) -> frozenset[Location]:
         """ Find the peer nodes associated with a file """
-        locs = {
-            state.location
-            for state in self._weaks.values()
-            if filename in state.files
-        }
+        locs = frozenset(
+            weak.location
+            for weak in self._weaks.values()
+            if file in weak.files)
 
         return locs
 
@@ -205,7 +201,7 @@ class SuperPeer:
                 print(f'The weak peers connected are:\n{weak_peers}\n')
 
             elif option == '2':
-                files = '\n'.join(self.get_files())
+                files = '\n'.join(f.name for f in self.get_files())
                 print('The files on the system are:')
                 print(f'{files}\n')
 
@@ -222,22 +218,18 @@ class SuperPeer:
         reader, writer = conn
         logger = default_logger(logging.getLogger(login.id))
 
-        async def query(filename: str):
+        async def query(file: File.Data):
             """ Actions for query requests from weak peers """
-            logger.info(f'query for {filename}')
-            conn_info = getpeerbystream(conn)
-            curr_time = time()
+            logger.info(f'query for {file.name}')
 
-            # not checks for multiple queries of the same file
-            id = f'{conn_info[0]}:{conn_info[1]}:{filename}:{curr_time}'
-            timeout = 5 # TODO: make param
-            weak_query = Response(id, filename, timeout)
+            locs = self.get_location(file)
+            response = Response(file, locs)
 
-            self._queries[weak_query.id] = conn
-            await self._local_query(weak_query)
+            await self._requests.put(
+                RequestCall(Request.QUERY, conn, response=response))
 
 
-        async def update(files: frozenset[str]):
+        async def update(files: frozenset[File.Data]):
             """ Actions for update requests from weak peers """
             weak = self._weaks[login.id]
             if weak.files == files and files:
@@ -290,33 +282,6 @@ class SuperPeer:
             # update weak files, weak files invalidated
             del self._weaks[login.id]
             await writer.wait_closed() # delete super state
-
-
-    async def _local_query(self, query: Response):
-        """
-        Checks if query filename exists locally and keeps track of query
-        alive timeout
-        """
-        locs = self.get_location(query.filename)
-
-        async def alive_timer():
-            """ Timer to autoremove query if dead """
-            await aio.sleep(query.alive_time)
-            del self._queries[query.id]
-
-        if locs:
-            src = self._queries[query.id]
-            if isinstance(src, SuperState):
-                src.log.info(f'got a hit for {query.id}')
-                src = src.sender
-
-            if src is None: return
-
-            hit = Response(query.id, query.filename, _locations=locs)
-            await self._requests.put(
-                RequestCall(Request.QUERY, src, query=hit))
-
-        aio.create_task(alive_timer())
 
 
     #endregion
