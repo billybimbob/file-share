@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from io import BufferedReader
 import pickle
 import struct
 import sys
@@ -57,8 +58,8 @@ class Procedure:
         DOWNLOAD: chunk :: File.Chunk
             | N/A
         FILES: None
-            | files :: frozenset[str]
-        QUERY: filename :: str
+            | files :: frozenset[File.Data]
+        QUERY: file :: File.Data
             | response :: Response
         UPDATE: files :: frozenset[File.Data]
             | N/A
@@ -282,6 +283,18 @@ def getpeerbystream(
         raise RuntimeError('cannot get peer information')
 
     return poss_info[:2]
+
+
+def chunk_iter(file_ptr: BufferedReader, read_limit: int):
+    """ Reads the reader in chunks, to help avoid large memory loads """
+    amt_yield = 0
+    while amt_yield < read_limit:
+        chunk = file_ptr.read(CHUNK_SIZE)
+        limit = min(len(chunk), read_limit-amt_yield)
+        chunk = chunk[:limit]
+        amt_yield += len(chunk)
+
+        yield chunk
 
 
 async def ainput(prompt: str='') -> str:

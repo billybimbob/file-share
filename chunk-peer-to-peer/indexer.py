@@ -1,118 +1,134 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import Any, NamedTuple, Optional
+
+import asyncio as aio
+import logging
+import socket
+
 from dataclasses import dataclass, field
+from typing import Any
 
 from argparse import ArgumentParser
 from pathlib import Path
 
-import asyncio as aio
-import socket
-import logging
-
-from connection import (
-    Procedure, StreamPair, Message, Request,
+from lib.connection import (
+    File, Location, Login, Message, Procedure, Response, Request, StreamPair,
     ainput, getpeerbystream, merge_config_args, version_check
 )
 
 
 @dataclass(frozen=True)
 class PeerState:
-    """ Peer connection state """
-    loc: tuple[str,int]
-    files: set[str] = field(default_factory=set)
-    signal: aio.Event = field(default_factory=aio.Event)
+    """ Weak peer connection state """
+    location: Location
+    sender: StreamPair
+    files: set[File.Data] = field(default_factory=set)
     log: logging.Logger = field(default_factory=logging.getLogger)
 
 
-class PeerUpdate(NamedTuple):
-    """ Pending changes to update the a given peer's state """
-    peer: StreamPair
-    args: Optional[dict[str, Any]] = None
+class RequestCall:
+    """ Pending request to a given connection """
+    _conn: StreamPair
+    _args: dict[str, Any]
 
+    def __init__(self, request: Request, conn: StreamPair, **kwargs: Any):
+        self._conn = conn
+        self._args = dict(req_type=request, **kwargs)
 
-class Login(NamedTuple):
-    """ Initial peer identification """
-    user: str
-    host: str
-    port: int
+    @property
+    def conn(self):
+        return self._conn
+
+    def __call__(self):
+        """ Sends the request to the connection stream """
+        return self._conn.request(**self._args)
 
 
 class Indexer:
-    """ Indexing server node that keeps track of file positions """
-    port: int
-    peers: dict[StreamPair, PeerState]
-    updates: aio.PriorityQueue[tuple[int, PeerUpdate]]
+    """ Super peer node """
+    _port: int
+    _peers: dict[str, PeerState]
 
-    DELETE_PRIORITY = 1
-    UPDATE_PRIORITY = 2
+    # async state, not defined in init
+    _requests: aio.Queue[RequestCall]
 
     PROMPT = (
-        "1. List active peers\n"
+        "1. List active weak peers\n"
         "2. List all files in the system\n"
         "3. Kill Server (any value besides 1 & 2 also works)\n"
         "Select an Option: ")
-    
+
 
     def __init__(self, port: int, **_):
         """
-        Create the state structures for an indexing node; to start running the server, 
-        run the function start_server
+        Create the state structures for a strong peer node; to start running 
+        the server, run the function start_server
         """
-        self.port = max(1, port)
-        self.peers = {}
+        self._port = max(1, port)
+        self._peers = dict()
 
 
-    def get_files(self) -> frozenset[str]:
+    #region getters
+
+    def get_files(self) -> frozenset[File.Data]:
         """ Gets all the unique files accross all peers """
-        return frozenset(
+        files = frozenset(
             file
-            for info in self.peers.values()
-            for file in info.files
+            for state in self._peers.values()
+            for file in state.files
         )
 
+        return files
 
-    def get_location(self, filename: str) -> set[tuple[str, int]]:
+
+    def get_location(self, file: File.Data) -> frozenset[Location]:
         """ Find the peer nodes associated with a file """
-        locs = {
-            info.loc
-            for info in self.peers.values()
-            if filename in info.files
-        }
+        locs = frozenset(
+            peer.location
+            for peer in self._peers.values()
+            if file in peer.files)
 
         return locs
+
+    #endregion
 
 
     async def start_server(self):
         """
-        Initializes the indexer server and workers; awaiting on 
+        Initializes the indexer server and workers; awaiting on
         this method will wait until the server is closed
         """
         # async sync state needs to be init from async context
-        self.updates = aio.PriorityQueue()
+        self._requests = aio.Queue()
 
-        def to_connection(reader: aio.StreamReader, writer: aio.StreamWriter):
-            """ Indexer closure as a stream callback """
-            return self._peer_connected(StreamPair(reader, writer))
+        async def to_receiver(
+            reader: aio.StreamReader, writer: aio.StreamWriter):
+            """ Switch to determine which receiver to use """
+            conn = StreamPair(reader, writer)
+            login = await Message[Login].read(reader) # TODO: add try except
+
+            await self._weak_receiver(login, conn)
 
         try:
             host = socket.gethostname()
-            server = await aio.start_server(to_connection, host, self.port, start_serving=False)
+            server = await aio.start_server(
+                to_receiver, host, self._port, start_serving=False)
 
             async with server:
                 if not server.sockets:
                     return
 
-                addr = server.sockets[0].getsockname()[0]
-                logging.info(f'indexing server on {addr}')
+                addr = server.sockets[0].getsockname()
+                logging.info(f'super server on {addr[:2]}')
 
-                updates = aio.create_task(self._update_loop())
+                caller = aio.create_task(self._request_caller())
 
                 await server.start_serving()
-                await aio.create_task(self._session())  
+                # make sure to serve before connects, else will be deadlocks
+                await aio.create_task(self._session())
 
-                updates.cancel()
+                caller.cancel()
 
             await server.wait_closed()
 
@@ -122,104 +138,135 @@ class Indexer:
                 task.cancel()
 
         finally:
-            logging.info("index server stopped")
+            logging.info("super server stopped")
 
 
+    async def _request_caller(self):
+        """ Handles sending all requests to specified targets"""
+        used_conns = set[StreamPair]()
+        usage_check = aio.Condition()
 
-    #region update queue handlers
+        async def request_task(req_call: RequestCall):
+            """
+            Execute requests while making sure concurrent stream access does
+            not occur
+            """
+            conn = req_call.conn
+            try:
+                async with usage_check:
+                    await usage_check.wait_for(
+                        lambda: conn not in used_conns)
+                    used_conns.add(conn)
 
-    async def _update_loop(self):
-        """
-        Handles update tasks put on the update queue, will run until cancelled
-        """
+                await req_call()
+                async with usage_check:
+                    used_conns.remove(conn)
+                    usage_check.notify_all()
+
+                self._requests.task_done()
+
+            except aio.CancelledError:
+                pass
+
+            except Exception as e:
+                logging.exception(f'{getpeerbystream(conn)}: {e}')
+
+        requests = set[aio.Task[None]]()
         try:
             while True:
-                priority, update_info = await self.updates.get()
-                peer, args = update_info
+                completed = { req for req in requests if req.done() }
+                # might be expensive
+                if completed:
+                    requests -= completed
 
-                if priority == Indexer.UPDATE_PRIORITY and args:
-                    self._update_files(peer, **args) # will call task_done
-                elif priority == Indexer.DELETE_PRIORITY:
-                    self._delete_peer(peer)
-                else:
-                    logging.error(f'got unknown priority or update missing args')
+                req_call = await self._requests.get()
+                requests.add(
+                    aio.create_task(request_task(req_call))
+                )
 
         except aio.CancelledError:
-            pass
+            for req in requests: req.cancel()
 
-
-    def _update_files(self, peer: StreamPair, files: frozenset[str]):
-        """ Query the given stream for updated file list """
-        if peer not in self.peers:
-            return
-
-        peer_state = self.peers[peer]
-
-        peer_state.files.clear()
-        peer_state.files.update(files)
-
-        self.peers[peer].log.debug("got updated files")
-        self.updates.task_done()
-        peer_state.signal.set()
-
-    
-    def _delete_peer(self, peer: StreamPair):
-        """ Removes a peer entry, should only be called after peer ends connection """
-        if peer in self.peers:
-            del self.peers[peer]
-        
-        self.updates.task_done()
-    
-
-    #endregion
 
 
     async def _session(self):
         """ Cli for indexer """
         while option := await ainput(Indexer.PROMPT):
             if option == '1':
-                peer_users = '\n'.join(
-                    str(peer)
-                    for peer in (
-                        getpeerbystream(pair)
-                        for pair in self.peers.keys()
-                        if not pair.writer.is_closing())
-                    if peer is not None
+                weak_peers = '\n'.join(
+                    str(s.location)
+                    for s in self._peers.values()
+                    if not s.sender.writer.is_closing()
                 )
-                print('The peers connected are: ')
-                print(f'{peer_users}\n')
+                print(f'The weak peers connected are:\n{weak_peers}\n')
 
             elif option == '2':
-                files = '\n'.join(self.get_files())
+                files = '\n'.join(f.name for f in self.get_files())
                 print('The files on the system are:')
                 print(f'{files}\n')
 
             else:
                 break
 
-        print('Exiting server')    
+        print('Exiting server')
 
 
-    #region peer connection
+    #region receivers
 
-    async def _peer_connected(self, peer: StreamPair):
-        """ A connection with a specific peer """
-        reader, writer = peer
-        logger = logging.getLogger()
+    async def _weak_receiver(self, login: Login, conn: StreamPair):
+        """ Server-side connection with a weak peer """
+        reader, writer = conn
+        logger = default_logger(logging.getLogger(login.id))
+
+        async def query(file: File.Data):
+            """ Actions for query requests from weak peers """
+            logger.info(f'query for {file.name}')
+
+            locs = self.get_location(file)
+            response = Response(file, locs)
+
+            await self._requests.put(
+                RequestCall(Request.QUERY, conn, response=response))
+
+
+        async def update(files: frozenset[File.Data]):
+            """ Actions for update requests from weak peers """
+            peer = self._peers[login.id]
+            if peer.files == files and files:
+                logger.error(f"received an unnecessary update")
+                return
+
+            logger.info('updating files')
+            peer.files.clear()
+            peer.files.update(files)
+
+
+        async def files():
+            """ Actions for files requests from weak peers """
+            logger.info('request for file list')
+            files = self.get_files()
+            
+            await self._requests.put(
+                RequestCall(Request.FILES, conn, files=files))
 
         try:
-            login = await Message.read(reader, Login)
-            username, host, port = login
-            loc = (host, port)
-            logger = logging.getLogger(username)
+            self._peers[login.id] = PeerState(login.location, conn, log=logger)
+            logger.info(f'connected')
 
-            self.peers[peer] = PeerState(loc, log=default_logger(logger))
+            while procedure := await Message[Procedure].read(reader):
+                request = procedure.request
 
-            remote = getpeerbystream(writer)
-            if remote:
-                logger.debug(f"connected to {username}: {remote}")
+                if request is Request.QUERY:
+                    await procedure(query)
 
-                await self._connect_loop(peer)
+                elif request is Request.UPDATE:
+                    await procedure(update)
+
+                elif request is Request.FILES:
+                    await procedure(files)
+
+                else:
+                    raise ValueError('Did not get an expected request')
 
         except aio.IncompleteReadError:
             pass
@@ -229,60 +276,13 @@ class Indexer:
             await Message.write(writer, e)
 
         finally:
-            if not reader.at_eof():
-                writer.write_eof()
-
             logger.debug('ending connection')
             writer.close()
 
-            await self.updates.put((Indexer.DELETE_PRIORITY, PeerUpdate(peer)))
-            await writer.wait_closed()
+            # update weak files, weak files invalidated
+            del self._peers[login.id]
+            await writer.wait_closed() # delete super state
 
-
-
-    async def _connect_loop(self, peer: StreamPair):
-        """ Request loop handler for each peer connection """
-
-        while procedure := await Message.read(peer.reader, Procedure):
-            request = procedure.request
-
-            if request is Request.GET_FILES:
-                await procedure(self._send_files, peer)
-
-            elif request is Request.UPDATE:
-                await procedure(self._receive_update, peer)
-
-            elif request is Request.QUERY:
-                await procedure(self._query_file, peer)
-
-            else:
-                break
-
-
-
-    async def _send_files(self, peer: StreamPair):
-        """
-        Handles the get files request, and sends files to given socket
-        """
-        self.peers[peer].log.debug("getting all files in cluster")
-        await self.updates.join() # wait for no more file updates
-        await Message.write(peer.writer, self.get_files())
-
-
-    async def _receive_update(self, peer: StreamPair, **update_args: Any):
-        """ Notify update handler of a update task, and wait for completion """
-        self.peers[peer].log.debug("updating file info")
-        signal = self.peers[peer].signal
-        signal.clear()
-        await self.updates.put((Indexer.UPDATE_PRIORITY, PeerUpdate(peer, update_args)))
-        await signal.wait() # block stream access til finished
-
-
-    async def _query_file(self, peer: StreamPair, filename: str):
-        """ Reply to stream with the peers that have specified file """
-        self.peers[peer].log.debug(f'querying for file {filename}')
-        await self.updates.join() # wait for no more file updates
-        await Message.write(peer.writer, self.get_location(filename))
 
     #endregion
 
@@ -290,7 +290,7 @@ class Indexer:
 
 def init_log(log: str, **_):
     """ Specifies logging format and location """
-    log_path = Path(f'./{log}')
+    log_path = Path(f'./{log}').with_suffix('.log')
     log_path.parent.mkdir(exist_ok=True, parents=True)
     log_settings = {
         'format': "%(asctime)s.%(msecs)03d:%(levelname)s:%(name)s: %(message)s",
@@ -316,8 +316,9 @@ if __name__ == "__main__":
 
     args = ArgumentParser(description="creates and starts an indexing server node")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
-    args.add_argument("-l", "--log", default='indexer.log', help="the file to write log info to")
+    args.add_argument("-l", "--log", default='super.log', help="the file to write log info to")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port to run the server on")
+    args.add_argument("-m", "--map", help="the super peer structure json file map")
 
     args = args.parse_args()
     args = merge_config_args(args)
