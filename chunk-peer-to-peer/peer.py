@@ -26,10 +26,12 @@ from lib.connection import (
 )
 
 
+CHUNK_SIZE = 64_000 # 64KB
+
 
 @dataclass(frozen=True)
-class SuperConnection:
-    """ All information about the super server connection """
+class IndexerConnection:
+    """ All information about the indexer connection """
     location: Location
     stream: StreamPair
     access: aio.Lock = field(default_factory=aio.Lock)
@@ -37,7 +39,7 @@ class SuperConnection:
 
 class RequestsHandler:
     """
-    Synchronized handler for all received procedures from the super peer 
+    Synchronized handler for all received procedures from the indexer 
     """
 
     @dataclass
@@ -47,18 +49,19 @@ class RequestsHandler:
         num_waiters: int = 0
 
 
-    _conn: Optional[SuperConnection]
+    _conn: Optional[IndexerConnection]
     _got: aio.Condition
     _queries: defaultdict[str, Waiter]
     _files: Waiter
 
     def __init__(self):
         self._conn = None
+        self._got = aio.Condition()
         self._queries = defaultdict(RequestsHandler.Waiter)
         self._files = RequestsHandler.Waiter()
 
 
-    async def listener(self, conn: SuperConnection):
+    async def listener(self, conn: IndexerConnection):
         """
         Listener that switches the receive action based on the 
         request type, that runs until cancelled
@@ -109,7 +112,7 @@ class RequestsHandler:
         file requests converge to the same request-and-response cycle
         """
         if not self._conn:
-            raise aio.InvalidStateError('Super connection not initialized')
+            raise aio.InvalidStateError('Indexer connection not initialized')
 
         filewait = self._files
         async with self._got:
@@ -135,10 +138,10 @@ class RequestsHandler:
     async def wait_for_query(self, file: File.Data) -> Response:
         """
         Sends and then waits for a query request response for the given file;
-        a new request is only sent to the super peer if new_req is True
+        a new request is only sent to the indexer if new_req is True
         """
         if not self._conn:
-            raise aio.InvalidStateError('Super connection not initialized')
+            raise aio.InvalidStateError('Indexer connection not initialized')
 
         waiter = self._queries[file.name]
         async with self._got:
@@ -167,7 +170,6 @@ class Peer:
     _port: int
     _user: str
     _direct: Path
-    _chunk_size: int # TODO: add to init
     _index_start: Location
 
     # async state, not defined in init
@@ -184,7 +186,7 @@ class Peer:
     def __init__(
         self,
         port: int,
-        sup_port: int,
+        in_port: int,
         user: Optional[str] = None,
         address: Optional[str] = None,
         directory: Union[str, Path, None] = None,
@@ -194,7 +196,10 @@ class Peer:
         start_server to activate the peer node
         """
         self._port = max(1, port)
-        self._user = socket.gethostname() if user is None else user
+        self._user = (
+            socket.gethostname() + str(self._port)
+            if user is None else
+            user)
 
         if directory is None:
             self._direct = Path('.')
@@ -210,7 +215,7 @@ class Peer:
         else:
             in_host = socket.gethostbyaddr(address)[0]
 
-        self._index_start = Location(in_host, sup_port)
+        self._index_start = Location(in_host, in_port)
 
 
     def get_files(self) -> frozenset[File.Data]:
@@ -244,13 +249,13 @@ class Peer:
                 if not server.sockets:
                     return
 
-                super_peer = await self._connect_super(host)
+                indexer = await self._connect_index(host)
 
                 # make sure that event is listening before it can be set and cleared
                 first_update = aio.create_task(self._dir_update.wait())
 
-                sender = aio.create_task(self._update_dir(super_peer))
-                listener = aio.create_task(self._requests.listener(super_peer))
+                sender = aio.create_task(self._update_dir(indexer))
+                listener = aio.create_task(self._requests.listener(indexer))
 
                 # only accept connections and user input after a dir_update
                 # should not deadlock, keep eye on
@@ -258,7 +263,7 @@ class Peer:
                 await server.start_serving()
 
                 session = aio.create_task(self._session())
-                watch = aio.create_task(self._watch_connection(super_peer))
+                watch = aio.create_task(self._watch_connection(indexer))
 
                 await aio.wait([session, watch], return_when=aio.FIRST_COMPLETED)
 
@@ -281,24 +286,24 @@ class Peer:
 
 
 
-    async def _connect_super(self, host: str) -> SuperConnection:
-        """ Establishes a connection with the super peer """
+    async def _connect_index(self, host: str) -> IndexerConnection:
+        """ Establishes a connection with the indexer peer """
         start = self._index_start
 
-        logging.info(f'trying connection with super at {start}')
+        logging.info(f'trying connection with indexer at {start}')
 
         in_pair = await aio.open_connection(start.host, start.port)
         in_pair = StreamPair(*in_pair)
-        logging.info(f'connection with super')
+        logging.info(f'connection with indexer')
 
         login = Login(self._user, host, self._port)
         await Message.write(in_pair.writer, login)
 
-        return SuperConnection(start, in_pair)
+        return IndexerConnection(start, in_pair)
 
 
 
-    async def _update_dir(self, conn: SuperConnection):
+    async def _update_dir(self, conn: IndexerConnection):
         """
         Sends updated directory to indexer, should be the only place where
         files attr is updated in order to sync with indexer
@@ -337,7 +342,7 @@ class Peer:
 
 
 
-    async def _watch_connection(self, conn: SuperConnection):
+    async def _watch_connection(self, conn: IndexerConnection):
         """ Coroutine that completes when the indexer connection is closed """
         reader, writer = conn.stream
         try:
@@ -477,20 +482,20 @@ class Peer:
         response: Response) -> Mapping[Location, Iterable[File.Chunk]]:
         """ Divides a response into location chunk pairings """
 
-        num_chunks = response.file.size // self._chunk_size
-        remaining = response.file.size % self._chunk_size
+        num_chunks = response.file.size // CHUNK_SIZE
+        remaining = response.file.size % CHUNK_SIZE
 
         chunks = [
             File.Chunk(
                 name = response.file.name,
-                offset = i * self._chunk_size,
-                size = self._chunk_size )
+                offset = i * CHUNK_SIZE,
+                size = CHUNK_SIZE )
             for i in range(num_chunks) ]
 
         chunks.append( # add leftover that is not a full chunk
             File.Chunk(
                 name = response.file.name,
-                offset = num_chunks * self._chunk_size,
+                offset = num_chunks * CHUNK_SIZE,
                 size = remaining))
 
         # don't filter for self location, should be done before
@@ -511,8 +516,11 @@ class Peer:
         if target == Location(socket.gethostname(), self._port):
             raise ValueError('location specified is self')
 
+        if not chunks:
+            raise ValueError('no chunks specified')
+
         if not all(c.name == chunks[0].name for c in chunks):
-            raise ValueError('all chunk names must be the same')
+            raise ValueError('chunks do not have same file name')
 
         logging.debug(f"attempting connection to {target}")
 
@@ -528,7 +536,7 @@ class Peer:
             log = logging.getLogger(user)
             log.debug("connected")
 
-            await aio.gather(*[
+            await aio.gather(*[ # no check on stitched together file
                 self._receive_file_retries(pair, chunk, log)
                 for chunk in chunks ])
 
@@ -550,7 +558,6 @@ class Peer:
         """
         Runs multiple attempts to download a file from the server if needed
         """
-        # TODO: modify to use chunks
         filename = chunk.name
         start_time = time()
 
@@ -707,9 +714,9 @@ if __name__ == "__main__":
     args.add_argument("-a", "--address", default=None, help="ip address of the indexing server")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
     args.add_argument("-d", "--directory", default='', help="the client download folder")
+    args.add_argument("-i", "--in-port", type=int, default=8889, help="the port of the indexer")
     args.add_argument("-l", "--log", default='weak.log', help="the file to write log info to")
     args.add_argument("-p", "--port", type=int, default=9989, help="the port to listen for connections")
-    args.add_argument("-s", "--sup-port", type=int, default=8889, help="the port of the super server")
     args.add_argument("-u", "--user", help="username of the client connecting")
     args.add_argument("-v", "--verbosity", type=int, default=10, choices=[0, 10, 20, 30, 40, 50], help="the logging verboseness, level corresponds to default levels")
 

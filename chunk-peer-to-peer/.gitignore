@@ -1,2 +1,4 @@
 multiple-reads.py
 test.txt
+*.log
+servers/

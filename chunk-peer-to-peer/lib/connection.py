@@ -324,6 +324,7 @@ def read_main_config(filename: str) -> dict[str, Union[str, int]]:
     main = conf['main']
     for arg in main:
         val = main[arg]
+        arg = arg.replace('-', '_')
         args[arg] = int(val) if val.isnumeric() else val
 
     return args

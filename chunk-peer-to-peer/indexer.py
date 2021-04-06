@@ -20,7 +20,7 @@ from lib.connection import (
 
 @dataclass(frozen=True)
 class PeerState:
-    """ Weak peer connection state """
+    """ Peer connection state """
     location: Location
     sender: StreamPair
     files: set[File.Data] = field(default_factory=set)
@@ -54,7 +54,7 @@ class Indexer:
     _requests: aio.Queue[RequestCall]
 
     PROMPT = (
-        "1. List active weak peers\n"
+        "1. List active peers\n"
         "2. List all files in the system\n"
         "3. Kill Server (any value besides 1 & 2 also works)\n"
         "Select an Option: ")
@@ -108,7 +108,7 @@ class Indexer:
             conn = StreamPair(reader, writer)
             login = await Message[Login].read(reader) # TODO: add try except
 
-            await self._weak_receiver(login, conn)
+            await self._peer_receiver(login, conn)
 
         try:
             host = socket.gethostname()
@@ -193,12 +193,12 @@ class Indexer:
         """ Cli for indexer """
         while option := await ainput(Indexer.PROMPT):
             if option == '1':
-                weak_peers = '\n'.join(
+                peers = '\n'.join(
                     str(s.location)
                     for s in self._peers.values()
                     if not s.sender.writer.is_closing()
                 )
-                print(f'The weak peers connected are:\n{weak_peers}\n')
+                print(f'The peers connected are:\n{peers}\n')
 
             elif option == '2':
                 files = '\n'.join(f.name for f in self.get_files())
@@ -213,13 +213,13 @@ class Indexer:
 
     #region receivers
 
-    async def _weak_receiver(self, login: Login, conn: StreamPair):
-        """ Server-side connection with a weak peer """
+    async def _peer_receiver(self, login: Login, conn: StreamPair):
+        """ Server-side connection with a peer """
         reader, writer = conn
         logger = default_logger(logging.getLogger(login.id))
 
         async def query(file: File.Data):
-            """ Actions for query requests from weak peers """
+            """ Actions for query requests from peers """
             logger.info(f'query for {file.name}')
 
             locs = self.get_location(file)
@@ -230,7 +230,7 @@ class Indexer:
 
 
         async def update(files: frozenset[File.Data]):
-            """ Actions for update requests from weak peers """
+            """ Actions for update requests from peers """
             peer = self._peers[login.id]
             if peer.files == files and files:
                 logger.error(f"received an unnecessary update")
@@ -242,7 +242,7 @@ class Indexer:
 
 
         async def files():
-            """ Actions for files requests from weak peers """
+            """ Actions for files requests from peers """
             logger.info('request for file list')
             files = self.get_files()
             
@@ -250,6 +250,9 @@ class Indexer:
                 RequestCall(Request.FILES, conn, files=files))
 
         try:
+            if login.id in self._peers:
+                raise RuntimeError(f'{login.id} is already logged in')
+
             self._peers[login.id] = PeerState(login.location, conn, log=logger)
             logger.info(f'connected')
 
@@ -279,7 +282,7 @@ class Indexer:
             logger.debug('ending connection')
             writer.close()
 
-            # update weak files, weak files invalidated
+            # peer files invalidated
             del self._peers[login.id]
             await writer.wait_closed() # delete super state
 
