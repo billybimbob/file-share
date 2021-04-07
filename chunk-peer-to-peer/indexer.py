@@ -12,7 +12,7 @@ from typing import Any
 from argparse import ArgumentParser
 from pathlib import Path
 
-from lib.connection import (
+from connection import (
     File, Location, Login, Message, Procedure, Response, Request, StreamPair,
     ainput, getpeerbystream, merge_config_args, version_check
 )
@@ -76,8 +76,7 @@ class Indexer:
         files = frozenset(
             file
             for state in self._peers.values()
-            for file in state.files
-        )
+            for file in state.files)
 
         return files
 
@@ -191,24 +190,29 @@ class Indexer:
 
     async def _session(self):
         """ Cli for indexer """
-        while option := await ainput(Indexer.PROMPT):
-            if option == '1':
-                peers = '\n'.join(
-                    str(s.location)
-                    for s in self._peers.values()
-                    if not s.sender.writer.is_closing()
-                )
-                print(f'The peers connected are:\n{peers}\n')
+        try:
+            while option := await ainput(Indexer.PROMPT):
+                if option == '1':
+                    peers = '\n'.join(
+                        str(s.location)
+                        for s in self._peers.values()
+                        if not s.sender.writer.is_closing()
+                    )
+                    print(f'The peers connected are:\n{peers}\n')
 
-            elif option == '2':
-                files = '\n'.join(f.name for f in self.get_files())
-                print('The files on the system are:')
-                print(f'{files}\n')
+                elif option == '2':
+                    files = '\n'.join(f.name for f in self.get_files())
+                    print('The files on the system are:')
+                    print(f'{files}\n')
 
-            else:
-                break
+                else:
+                    break
 
-        print('Exiting server')
+        except EOFError:
+            pass
+
+        finally:
+            print('Exiting server')
 
 
     #region receivers

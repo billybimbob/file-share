@@ -19,7 +19,7 @@ from io import BufferedRandom
 from pathlib import Path
 from time import time
 
-from lib.connection import (
+from connection import (
     File, Location, Login, Message, Procedure,
     Response, Request, StreamPair,
     ainput, merge_config_args, version_check
@@ -416,14 +416,14 @@ class Peer:
         files = await self._system_files()
         elapsed = time() - start_time
 
-        logging.info(f"response time for getting files took {elapsed:.4f} secs")
+        logging.info(
+            f"response time for getting files took {elapsed:.4f} secs")
 
         if len(files) == 0:
             print('There are no files that can be downloaded')
             return
 
         picked = await self._select_file(files)
-
         if picked is None:
             print('invalid file entered')
             return
@@ -439,16 +439,26 @@ class Peer:
             loc for loc in response.locations if loc != self_loc)
 
         if len(not_self) == 0:
+            print(f'Cannot find download target for {picked.name}')
             logging.error(f"location for {picked} is only self")
             return
 
+        filepath = self._new_download_path(response)
         target_map = self._split_to_chunks(response)
 
-        await aio.gather(*[
-            self._peer_download(target, *chunks)
-            for target, chunks in target_map.items() ])
+        # no check on stitched together file
+        results = await aio.gather(*[
+            self._peer_download(filepath, target, *chunks)
+            for target, chunks in target_map.items() ],
+            return_exceptions = True)
 
-        self._dir_update.set()
+        excepts = [e for e in results if isinstance(e, Exception)]
+        if not excepts:
+            print(f'Download for {picked.name} succeeded')
+            self._dir_update.set()
+        else:
+            print('Ran into an issue while downloading')
+
 
 
 
@@ -474,6 +484,35 @@ class Peer:
             return file_map[choice]
         else:
             return None
+
+
+
+    def _new_download_path(self, response: Response) -> Path:
+        """
+        Gets a non-existing path based on the file, and truncates to the
+        expected response size
+        """
+        filepath = self._direct.joinpath(response.file.name)
+        exts = "".join(filepath.suffixes)
+        stem = filepath.stem
+
+        # can have issues with different files having the same name
+        if m := re.match(r'\)(\d+)\(', stem[::-1]):
+            # use dup modifier if it exists
+            dup_mod = int(m[1])
+            stem = stem[:-m.end()]
+        else:
+            dup_mod = 1
+
+        while filepath.exists():
+            filepath = filepath.with_name(f'{stem}({dup_mod}){exts}')
+            dup_mod += 1
+
+        # make size the same as response
+        with open(filepath, 'wb') as f:
+            f.truncate(response.file.size)
+
+        return filepath
 
 
 
@@ -510,103 +549,91 @@ class Peer:
 
 
 
-    async def _peer_download(self, target: Location, *chunks: File.Chunk):
+    async def _peer_download(
+        self, filepath: Path, target: Location, *chunks: File.Chunk):
         """ Client-side connection with any of the other peers """
-
-        if target == Location(socket.gethostname(), self._port):
-            raise ValueError('location specified is self')
-
-        if not chunks:
-            raise ValueError('no chunks specified')
-
-        if not all(c.name == chunks[0].name for c in chunks):
-            raise ValueError('chunks do not have same file name')
-
-        logging.debug(f"attempting connection to {target}")
-
-        pair = await aio.open_connection(target.host, target.port)
-        pair = StreamPair(*pair)
-        reader, writer = pair
 
         log = logging.getLogger()
         try:
-            await Message.write(writer, self._user)
-            user = await Message[str].read(reader)
+            self_loc = Location(socket.gethostname(), self._port)
+            if target == self_loc:
+                raise ValueError('location specified is self')
 
-            log = logging.getLogger(user)
-            log.debug("connected")
+            if not chunks:
+                raise ValueError('no chunks specified')
 
-            await aio.gather(*[ # no check on stitched together file
-                self._receive_file_retries(pair, chunk, log)
-                for chunk in chunks ])
+            if not all(c.name == chunks[0].name for c in chunks):
+                raise ValueError('chunks do not have same file name')
 
+            logging.debug(f"attempting connection to {target}")
+
+            pair = await aio.open_connection(target.host, target.port)
+            pair = StreamPair(*pair)
+            reader, writer = pair
+
+            try:
+                await Message.write(writer, self._user)
+                user = await Message[str].read(reader)
+
+                log = logging.getLogger(user)
+                log.debug("connected")
+
+                with open(filepath, 'r+b') as f:
+                    for chunk in chunks:
+                        # get each chunk one by one per connection
+                        await self._receive_file_retries(f, pair, chunk, log)
+            finally:
+                if not reader.at_eof():
+                    writer.write_eof()
+
+                writer.close()
+                await writer.wait_closed()
+                log.debug("disconnected")
+            
         except Exception as e:
-            logging.exception(e)
-
-        finally:
-            if not reader.at_eof():
-                writer.write_eof()
-
-            writer.close()
-            await writer.wait_closed()
-            log.debug("disconnected")
-
+            log.exception(e)
+            raise e
 
 
     async def _receive_file_retries(
-        self, peer: StreamPair, chunk: File.Chunk, log: logging.Logger):
+        self,
+        file_ptr: BufferedRandom,
+        peer: StreamPair,
+        chunk: File.Chunk,
+        log: logging.Logger):
         """
         Runs multiple attempts to download a file from the server if needed
         """
-        filename = chunk.name
         start_time = time()
-
-        filepath = self._direct.joinpath(filename)
-        exts = "".join(filepath.suffixes)
-        stem = filepath.stem
-
-        # can have issues with different files having the same name
-        if m := re.match(r'\)(\d+)\(', stem[::-1]):
-            # use dup modifier if it exists
-            dup_mod = int(m[1])
-            stem = stem[:-m.end()]
-        else:
-            dup_mod = 1
-
-        while filepath.exists():
-            filepath = filepath.with_name(f'{stem}({dup_mod}){exts}')
-            dup_mod += 1
-
+        tot_read = 0
         got_file = False
         num_tries = 0
-        tot_read = 0
-        
-        with open(filepath, 'r+b') as f:
-            # TODO: make tries param
-            while not got_file and num_tries < 5:
-                got_file, amt_read = await peer.request(
-                    Request.DOWNLOAD,
-                    chunk = chunk,
-                    receiver = partial(
-                        self._receive_file,
-                        file_ptr = f,
-                        offset = chunk.offset ))
 
-                num_tries += 1
-                tot_read += amt_read
+        while not got_file and num_tries < 5:
+            # TODO: make tries param
+            got_file, amt_read = await peer.request(
+                Request.DOWNLOAD,
+                chunk = chunk,
+                receiver = partial(
+                    self._receive_file,
+                    file_ptr = file_ptr,
+                    offset = chunk.offset ))
+
+            num_tries += 1
+            tot_read += amt_read
 
         elapsed = time() - start_time
         log.info(f"successfully got file")
-        log.debug(f'received {filename} was {elapsed:.4f} secs')
+        log.debug(f'received {file_ptr.name} was {elapsed:.4f} secs')
         log.info(f'read {(tot_read / 1000):.2f} KB')
 
 
 
     async def _receive_file(
         self,
+        reader: aio.StreamReader,
         file_ptr: BufferedRandom,
-        offset: int,
-        reader: aio.StreamReader) -> tuple[bool, int]:
+        offset: int) -> tuple[bool, int]:
         """
         Used by the client side to download and verify correctness of download
         """
