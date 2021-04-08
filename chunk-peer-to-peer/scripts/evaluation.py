@@ -16,6 +16,7 @@ import json
 import os
 import random
 import shutil
+import string
 import sys
 
 
@@ -35,7 +36,45 @@ INDEXER = Path('indexer').with_suffix('.py')
 CHUNK_SIZE = 1024
 PEER_PORT_BASE = 9989
 
-label: str
+SIZE_MAP = {
+    '1m': 1_048_576
+}
+
+
+
+def init_server(file_size: str, min_copies: int):
+    """ 
+    Standardizes file names for a server, and generates missing files
+    if needed
+    """
+    target_server = SERVERS.joinpath(file_size)
+    target_server.mkdir(parents=True, exist_ok=True)
+
+    curr_files = [
+        f for f in target_server.iterdir() if f.is_file()]
+
+    new_files = [
+        f.with_name(
+            f'{file_size}({i})').with_suffix(''.join(f.suffixes))
+        for i, f in enumerate(curr_files) ]
+    
+    for old, new in zip(curr_files, new_files):
+        shutil.move(old, new)
+
+    num_files = len(new_files)
+    poss_chars = string.ascii_letters + string.digits + ' \n'
+
+    for i in range(num_files, min_copies):
+        new_file = target_server.joinpath(
+            f'{file_size}({i})').with_suffix('.txt')
+
+        with open(new_file, 'x') as f:
+            # potential stack issue
+            rand_bytes = [
+                random.choice(poss_chars)
+                for _ in range(SIZE_MAP[file_size]) ]
+
+            f.write(''.join(rand_bytes))
 
 
 #region dry run peers
@@ -99,7 +138,8 @@ def dry_run_peers(start_loc: str, **kwargs: Any):
 
 
 
-def dry_create_peers(num_peers: int, file_size: str) -> dict[str, list[str]]:
+def dry_create_peers(
+    label: str, num_peers: int, file_size: str) -> dict[str, list[str]]:
     " Sets up peer directory structure without creating the processes "
     src_dir = SERVERS.joinpath(file_size)
     peers = list[PeerRun]()
@@ -123,18 +163,19 @@ def dry_create_peers(num_peers: int, file_size: str) -> dict[str, list[str]]:
 #region peers
 
 async def create_peers(
+    label: str,
     num_peers: int,
     file_size: str,
     verbosity: int) -> Sequence[PeerRun]:
     """ Creates a number of client processes """
     src_dir = SERVERS.joinpath(file_size)
     peers = await aio.gather(*[
-        init_peer(i, verbosity, src_dir) for i in range(num_peers) ])
+        init_peer(label, i, verbosity, src_dir) for i in range(num_peers) ])
 
     return peers
 
 
-async def init_peer(id: int, verbosity: int, src_dir: Path) -> PeerRun:
+async def init_peer(label: str, id: int, verbosity: int, src_dir: Path) -> PeerRun:
     """
     Starts a peer process, and also waits for a peer response, which should 
     indicate that the peer is ready to take in user input
@@ -171,14 +212,16 @@ def init_peer_paths(user: str, log: Path, peer_dir: Path, src_dir: Path):
         peer_dir.mkdir(parents=True)
         shutil.copytree(src_dir, peer_dir, dirs_exist_ok=True)
 
-        old_names = list(peer_dir.iterdir())
-        new_names = [
-            old.with_name(f'{old.stem}-{user}{"".join(old.suffixes)}')
-            for old in old_names ]
+        # don't rename files
 
-        # rename files
-        for old, new in zip(old_names, new_names):
-            shutil.move(str(old), str(new))
+        # old_names = list(peer_dir.iterdir())
+        # new_names = [
+        #     old.with_name(f'{old.stem}-{user}{"".join(old.suffixes)}')
+        #     for old in old_names ]
+
+        # # rename files
+        # for old, new in zip(old_names, new_names):
+        #     shutil.move(str(old), str(new))
 
 
 def reset_peers_path(peers: Iterable[PeerRun]):
@@ -244,7 +287,7 @@ async def run_downloads(
     print('all query peers have stopped')
 
 
-async def interact_peer(num_peers: int, file_size: str, verbosity: int):
+async def interact_peer(label: str, num_peers: int, file_size: str, verbosity: int):
     """
     Creates an extra peer that will connect to the given indexer that can 
     be interfaced with the terminal
@@ -302,7 +345,7 @@ async def get_response(peer: proc.Process):
 
 #region indexer peers
 
-async def start_indexer() -> proc.Process:
+async def start_indexer(label: str) -> proc.Process:
     """
     Launches the server on a separate process with the specified log and 
     directory
@@ -338,6 +381,7 @@ async def stop_indexer(server: proc.Process):
 async def run_cycle(
     num_peers: int,
     file_size: str,
+    min_copies: int,
     query_peers: int,
     requests: int,
     verbosity: int,
@@ -346,21 +390,23 @@ async def run_cycle(
     """
     Manages the creation, running, and killing of server and client procs
     """
+    init_server(file_size, min_copies)
 
-    if dry_run is not None:
-        dry_run_peers(dry_run, num_peers=num_peers, file_size=file_size)
-        return
-
-    global label
     label = f'{num_peers}p{file_size}f'
 
-    indexer = await start_indexer()
-    peers = await create_peers(num_peers, file_size, verbosity)
+    if dry_run is not None:
+        dry_run_peers(
+            dry_run, label=label, num_peers=num_peers, file_size=file_size)
+        return
+
+
+    indexer = await start_indexer(label)
+    peers = await create_peers(label, num_peers, file_size, verbosity)
 
     try:
         # interact done first, so that peers don't end early
         if interactive:
-            await interact_peer(num_peers, file_size, verbosity)
+            await interact_peer(label, num_peers, file_size, verbosity)
 
         await aio.gather(*[ run_downloads(peers, query_peers, requests) ])
 
@@ -379,8 +425,9 @@ if __name__ == "__main__":
 
     args = ArgumentParser(description="Runs various configurations for peer clients")
     args.add_argument("-d", "--dry-run", nargs="?", default=None, const='', help="run peer init without starting the processes; file path can be given to reset dir files")
-    args.add_argument("-f", "--file-size", default='128', choices=['128', '512', '2k', '8k', '32k'], help="the size of each file downloaded")
+    args.add_argument("-f", "--file-size", default='1m', choices=['1m'], help="the size of each file downloaded")
     args.add_argument("-i", "--interactive", action='store_true', help="creates an extra interactive peer to interface with the system")
+    args.add_argument("-m", "--min-copies", type=int, default=10, help="the minimum number of files per peer")
     args.add_argument("-n", "--num-peers", type=int, default=2, help="the number of concurrent clients")
     args.add_argument("-q", "--query-peers", type=int, default=-1, help="the amount of query peers")
     args.add_argument("-r", "--requests", type=int, default=10, help="total amount of query requests")

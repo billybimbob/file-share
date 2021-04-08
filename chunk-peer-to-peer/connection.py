@@ -11,8 +11,7 @@ import sys
 from collections.abc import Awaitable
 from enum import Enum
 from typing import (
-    Any, Callable, Generic, NamedTuple, Optional, TypeVar, Union, cast
-)
+    Any, Callable, Generic, NamedTuple, Optional, TypeVar, Union, cast)
 
 from argparse import Namespace
 from configparser import ConfigParser
@@ -27,6 +26,7 @@ CHUNK_SIZE = 1024
 
 class Request(Enum):
     """ Request messages """
+    CHECK = 'checksum'
     DOWNLOAD = 'download'
     FILES = 'files_list'
     QUERY = 'query'
@@ -55,6 +55,8 @@ class Procedure:
     and None indicates that no args are expected
 
     Expected Arguments:
+        CHECK: filename :: str
+            | checksum :: bytes
         DOWNLOAD: chunk :: File.Chunk
             | N/A
         FILES: None

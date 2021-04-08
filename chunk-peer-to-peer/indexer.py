@@ -14,8 +14,8 @@ from pathlib import Path
 
 from connection import (
     File, Location, Login, Message, Procedure, Response, Request, StreamPair,
-    ainput, getpeerbystream, merge_config_args, version_check
-)
+    ainput, getpeerbystream, merge_config_args, version_check)
+
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class PeerState:
     sender: StreamPair
     files: set[File.Data] = field(default_factory=set)
     log: logging.Logger = field(default_factory=logging.getLogger)
+
 
 
 class RequestCall:
@@ -45,8 +46,9 @@ class RequestCall:
         return self._conn.request(**self._args)
 
 
+
 class Indexer:
-    """ Super peer node """
+    """ Indexer node """
     _port: int
     _peers: dict[str, PeerState]
 
@@ -119,7 +121,7 @@ class Indexer:
                     return
 
                 addr = server.sockets[0].getsockname()
-                logging.info(f'super server on {addr[:2]}')
+                logging.info(f'indexer on {addr[:2]}')
 
                 caller = aio.create_task(self._request_caller())
 
@@ -137,7 +139,7 @@ class Indexer:
                 task.cancel()
 
         finally:
-            logging.info("super server stopped")
+            logging.info("indexing server stopped")
 
 
     async def _request_caller(self):
@@ -288,7 +290,7 @@ class Indexer:
 
             # peer files invalidated
             del self._peers[login.id]
-            await writer.wait_closed() # delete super state
+            await writer.wait_closed()
 
 
     #endregion
@@ -299,11 +301,11 @@ def init_log(log: str, **_):
     """ Specifies logging format and location """
     log_path = Path(f'./{log}').with_suffix('.log')
     log_path.parent.mkdir(exist_ok=True, parents=True)
-    log_settings = {
-        'format': "%(asctime)s.%(msecs)03d:%(levelname)s:%(name)s: %(message)s",
-        'datefmt': "%H:%M:%S",
-        'level': logging.DEBUG
-    }
+
+    log_settings = dict(
+        format = "%(asctime)s.%(msecs)03d:%(levelname)s:%(name)s: %(message)s",
+        datefmt = "%H:%M:%S",
+        level = logging.DEBUG )
 
     if not log_path.exists() or log_path.is_file():
         logging.basicConfig(filename=log, filemode='w', **log_settings)
@@ -323,9 +325,8 @@ if __name__ == "__main__":
 
     args = ArgumentParser(description="creates and starts an indexing server node")
     args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
-    args.add_argument("-l", "--log", default='super.log', help="the file to write log info to")
+    args.add_argument("-l", "--log", default='indexer.log', help="the file to write log info to")
     args.add_argument("-p", "--port", type=int, default=8888, help="the port to run the server on")
-    args.add_argument("-m", "--map", help="the super peer structure json file map")
 
     args = args.parse_args()
     args = merge_config_args(args)
