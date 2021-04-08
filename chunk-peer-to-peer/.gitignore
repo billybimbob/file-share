@@ -3,3 +3,4 @@ test.txt
 *.log
 servers/
 peers/
+times/

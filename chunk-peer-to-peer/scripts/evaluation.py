@@ -15,6 +15,7 @@ import shlex
 import json
 import os
 import random
+
 import shutil
 import string
 import sys
@@ -50,8 +51,9 @@ def init_server(file_size: str, min_copies: int):
     target_server = SERVERS.joinpath(file_size)
     target_server.mkdir(parents=True, exist_ok=True)
 
-    curr_files = [
-        f for f in target_server.iterdir() if f.is_file()]
+    curr_files = sorted(
+        (f for f in target_server.iterdir() if f.is_file()),
+        key = lambda f: f.name)
 
     new_files = [
         f.with_name(
@@ -59,9 +61,14 @@ def init_server(file_size: str, min_copies: int):
         for i, f in enumerate(curr_files) ]
     
     for old, new in zip(curr_files, new_files):
-        shutil.move(old, new)
+        if old != new:
+            shutil.move(old, new)
 
     num_files = len(new_files)
+
+    if num_files >= min_copies:
+        return
+
     poss_chars = string.ascii_letters + string.digits + ' \n'
 
     for i in range(num_files, min_copies):
@@ -248,7 +255,7 @@ async def run_downloads(
         num_queries = len(peers)
 
     min_amt = min(len(p.start_files) for p in peers)
-    req_range = min_amt * len(peers)
+    req_range = min_amt # file names should overlap
 
     async def request_peer(peer: PeerRun, run: int):
         """ Request commands ran on each selected peer """
@@ -262,7 +269,8 @@ async def run_downloads(
             tot_requests // num_queries + tot_requests % num_queries)
 
         if req_range <= num_requests:
-            client_input = [random.randint(1, req_range) for _ in range(num_requests)]
+            client_input = [
+                random.randint(1, req_range) for _ in range(num_requests)]
         else:
             client_input = random.sample(range(1, req_range), num_requests)
 
@@ -278,13 +286,11 @@ async def run_downloads(
 
 
     rand_peers = random.sample(range(0, len(peers)), num_queries)
+    runs = [
+        request_peer(peers[idx], i) for i, idx in enumerate(rand_peers) ]
 
-    await aio.gather(*[
-        request_peer(peers[idx], i+1)
-        for i, idx in enumerate(rand_peers)
-    ])
+    await aio.gather(*runs)
 
-    print('all query peers have stopped')
 
 
 async def interact_peer(label: str, num_peers: int, file_size: str, verbosity: int):
@@ -381,9 +387,9 @@ async def stop_indexer(server: proc.Process):
 async def run_cycle(
     num_peers: int,
     file_size: str,
+    requests: int,
     min_copies: int,
     query_peers: int,
-    requests: int,
     verbosity: int,
     interactive: bool,
     dry_run: Optional[str]):
@@ -398,7 +404,6 @@ async def run_cycle(
         dry_run_peers(
             dry_run, label=label, num_peers=num_peers, file_size=file_size)
         return
-
 
     indexer = await start_indexer(label)
     peers = await create_peers(label, num_peers, file_size, verbosity)

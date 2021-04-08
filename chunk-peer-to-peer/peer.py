@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio as aio
 import hashlib
 import logging
+import os
 import re
 import socket
 
@@ -23,8 +24,6 @@ from connection import (
     Response, Request, StreamPair,
     ainput, merge_config_args, version_check)
 
-
-CHUNK_SIZE = 64_000 # 64KB
 
 
 @dataclass(frozen=True)
@@ -174,6 +173,9 @@ class Peer:
     _requests: RequestsHandler
     _dir_update: aio.Event
 
+
+    CHUNK_SIZE = 64_000 # 64KB
+
     PROMPT = (
         "1. List all available files in system\n"
         "2. Download a file\n"
@@ -315,7 +317,11 @@ class Peer:
             try:
                 last_check = None
                 while True:
-                    check = self.get_files()
+                    check = {
+                        f.name
+                        for f in self._direct.iterdir()
+                        if f.is_file() }
+
                     if last_check != check:
                         last_check = check
                         self._dir_update.set()
@@ -447,6 +453,12 @@ class Peer:
         filepath = self._new_download_path(response)
         target_map = self._split_to_chunks(response)
 
+        # make size the same as response
+        with open(filepath, 'xb') as f:
+            f.truncate(response.file.size)
+
+        logging.info(f'downloading {picked.name} to {filepath.name}')
+
         downloads = [
             self._peer_download(filepath, target, *chunks)
             for target, chunks in target_map.items() ]
@@ -455,17 +467,27 @@ class Peer:
         results = await aio.gather(*downloads, return_exceptions=True)
         elapsed = time() - start_time
 
-        if self._results_passed(filepath, results):
-            read_amt = filepath.stat().st_size
-            print(f'Download for {picked.name} succeeded')
-            logging.info(
-                f'{filepath.name} downloaded {(read_amt / 1000):.2f} KB '
-                f'in {elapsed:.4f} secs')
+        excepts = [e for e in results if isinstance(e, Exception)]
 
-            self._dir_update.set()
-
-        else:
+        if excepts:
+            os.remove(filepath)
             print('Ran into an issue while downloading')
+            logging.error(f'download for {picked.name} failed')
+            return
+
+        read_amt = filepath.stat().st_size
+        logging.info(
+            f'{picked.name} downloaded {(read_amt / 1000):.2f} KB '
+            f'in {elapsed:.4f} secs')
+
+        if not self._checksum_passed(filepath, results):
+            os.remove(filepath)
+            logging.error('checksum failed')
+            return
+
+        logging.info('checksum passed')
+        print(f'Download for {picked.name} succeeded')
+        self._dir_update.set()
 
 
 
@@ -514,17 +536,13 @@ class Peer:
             filepath = filepath.with_name(f'{stem}({dup_mod}){exts}')
             dup_mod += 1
 
-        # make size the same as response
-        with open(filepath, 'wb') as f:
-            f.truncate(response.file.size)
-
         return filepath
 
 
     @staticmethod
     def _chunk_number(chunk: File.Chunk):
         """ The order number of chunk with respect to target file """
-        return chunk.offset // CHUNK_SIZE
+        return chunk.offset // Peer.CHUNK_SIZE
 
 
     def _split_to_chunks(
@@ -532,20 +550,20 @@ class Peer:
         response: Response) -> Mapping[Location, Iterable[File.Chunk]]:
         """ Divides a response into location chunk pairings """
 
-        num_chunks = response.file.size // CHUNK_SIZE
-        remaining = response.file.size % CHUNK_SIZE
+        num_chunks = response.file.size // Peer.CHUNK_SIZE
+        remaining = response.file.size % Peer.CHUNK_SIZE
 
         chunks = [
             File.Chunk(
                 name = response.file.name,
-                offset = i * CHUNK_SIZE,
-                size = CHUNK_SIZE )
+                offset = i * Peer.CHUNK_SIZE,
+                size = Peer.CHUNK_SIZE )
             for i in range(num_chunks) ]
 
         chunks.append( # add leftover that is not a full chunk
             File.Chunk(
                 name = response.file.name,
-                offset = num_chunks * CHUNK_SIZE,
+                offset = num_chunks * Peer.CHUNK_SIZE,
                 size = remaining))
 
         # don't filter for self location, should be done before
@@ -581,7 +599,7 @@ class Peer:
                 user = await Message[str].read(reader)
 
                 log = logging.getLogger(user)
-                log.debug("connected")
+                log.debug("connected as client")
 
                 return await self._download_requests(
                     pair, filepath, *chunks, log=log)
@@ -592,39 +610,32 @@ class Peer:
 
                 writer.close()
                 await writer.wait_closed()
-                log.debug("disconnected")
+                log.debug("disconnected as client")
             
         except Exception as e:
             log.exception(e)
             raise e
 
 
-    def _results_passed(
+    def _checksum_passed(
         self,
         filepath: Path,
-        results: list[Union[Exception, bytes, None]]) -> bool:
-        """ Determines if the download results were a successful download """
-
-        excepts = [e for e in results if isinstance(e, Exception)]
+        results: list[Optional[bytes]]) -> bool:
+        """ Checks if the remote checksum matches the local checksum """
         checksum = [r for r in results if isinstance(r, bytes)]
 
-        if excepts:
-            return False
-        elif not checksum:
+        if not checksum:
             return False
 
         local_checksum = hashlib.md5()
+
         with open(filepath, 'rb') as f:
             for line in f: local_checksum.update(line)
 
         local_checksum = local_checksum.digest()
         checksum = checksum[0]
 
-        checksum_passed = checksum == local_checksum
-        if checksum_passed:
-            logging.info('checksum passed')
-
-        return checksum_passed
+        return checksum == local_checksum
 
 
     def _check_chunks(self, target: Location, *chunks: File.Chunk):
@@ -717,7 +728,7 @@ class Peer:
             await Message.write(writer, self._user)
 
             log = logging.getLogger(user)
-            log.debug(f"connected")
+            log.debug(f"connected as server")
 
             while procedure := await Message[Procedure].read(reader):
                 request = procedure.request
@@ -744,7 +755,7 @@ class Peer:
 
             writer.close()
             await writer.wait_closed()
-            log.debug(f"disconnected")
+            log.debug(f"disconnected as server")
 
 
     async def _send_checksum(self, peer: StreamPair, filename: str):

@@ -11,7 +11,7 @@ import re
 import matplotlib.pyplot as plt
 
 
-TIMES = 'times'
+TIMES = Path('times')
 
 def read_response_times(log: Path) -> list[float]:
     """ Parse log files to extract client download times """
@@ -23,7 +23,7 @@ def read_response_times(log: Path) -> list[float]:
                 continue
 
             toks = line.split()
-            if 'response' in toks:
+            if 'downloaded' in toks:
                 times.append(float(toks[-2]))
 
     return times
@@ -31,10 +31,10 @@ def read_response_times(log: Path) -> list[float]:
 
 class Label(NamedTuple):
     """ Runtime classification Label, handles string parsing """
-    queries: int
+    num_peers: int
 
     def __str__(self):
-        return f'{self.queries} Query Clients'
+        return f'{self.num_peers} Peers'
 
 
     @staticmethod
@@ -54,13 +54,13 @@ class Label(NamedTuple):
         if label is None:
             return 0
         else:
-            return label.queries
+            return label.num_peers
 
 
     @staticmethod
     def get(log: Path) -> Optional[str]:
         """ Parses the log file name to get the configuration settings """
-        match = re.search(r'[\d]+w(\d+)q', log.name)
+        match = re.search(r'([\d]+)p[^f]+f', log.name)
         if not match:
             return None
 
@@ -69,7 +69,7 @@ class Label(NamedTuple):
 
 def as_time_json(filename: str) -> Path:
     """ Convert file name to be a json file in the times directory """
-    return Path(TIMES).joinpath(filename).with_suffix(".json")
+    return TIMES.joinpath(filename).with_suffix(".json")
     
 
 def record_times(time_file: str, run_label: str, times: list[float]):
@@ -91,15 +91,16 @@ def record_times(time_file: str, run_label: str, times: list[float]):
 
         # overwrite content
         f.seek(0)
-        json.dump(obj, f)
+        json.dump(obj, f, indent=4)
         f.truncate()
 
 
 
 def record_avgs(time_file: str, avg_file: Optional[str]=None) -> str:
     """
-    Truncates the recorded times to an average. One issue with this view is that the 
-    quantity of times entries between different run configs is lost
+    Truncates the recorded times to an average. One issue with this view 
+    is that the quantity of times entries between different run configs
+    is lost
     """
     if not avg_file:
         avg_file = time_file
@@ -116,7 +117,7 @@ def record_avgs(time_file: str, avg_file: Optional[str]=None) -> str:
 
     avgpath = as_time_json(avg_file)
     with open(avgpath, 'w+') as w:
-        json.dump(avgs, w)
+        json.dump(avgs, w, indent=4)
 
     return avg_file
 
@@ -151,8 +152,14 @@ def graph_avgs(name: str, avgfile: str, graphpath: Optional[str]):
 
 
 def parse_and_graph(
-    logs: str, name: str, times: str, averages: Optional[str], graph: Optional[str]):
-    """ Runs all the steps of parsing, recording, and graphing a given log file """
+    logs: str,
+    name: str,
+    times: str,
+    averages: Optional[str],
+    graph: Optional[str]):
+    """
+    Runs all the steps of parsing, recording, and graphing a given log file
+    """
     if (timepath := as_time_json(times)).exists():
         open(timepath, 'w').close()
 
