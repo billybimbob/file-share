@@ -222,11 +222,34 @@ class StreamPair(NamedTuple):
             raise ValueError("Only one of as_type or receiver can be defined")
 
         if receiver:
-            return await receiver(self.reader)
+            received = await receiver(self.reader)
+            return cast(T, received) # should be the same type
+
         elif as_type:
             return await Message[as_type].read(self.reader)
+
         else:
             return cast(Any, None) # kind of hacky
+
+
+
+class RequestCall:
+    """ Pending request to a given connection """
+    _conn: StreamPair
+    _args: dict[str, Any]
+
+    def __init__(self, request: Request, conn: StreamPair, **kwargs: Any):
+        self._conn = conn
+        self._args = dict(req_type=request, **kwargs)
+
+    @property
+    def conn(self):
+        return self._conn
+
+    def __call__(self):
+        """ Sends the request to the connection stream """
+        return self._conn.request(**self._args)
+
 
 
 class Location(NamedTuple):

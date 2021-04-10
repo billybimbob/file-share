@@ -48,40 +48,27 @@ Both `indexer.py` and `peer.py` can both take in a configuration file instead of
 ./{indexer.py | peer.py} -c CONFIG_FILE [ARGS...]
 ```
 
-### Super/Weak
+### Indexer/Peer
 
-Running the script `indexer.py` and `peer.py` are the actual peer-two-peer program, and they work in conjunction with each other. This form of running is fairly error-prone to failing, so it is not recommended to run this way. Demo modes are recommended to use the interactive mode for the evaluation script, which is specified in the [Evaluation section](#evaluation).
+Running the script `indexer.py` and `peer.py` are the actual peer-to-peer programs, and they work in conjunction with each other. This form of running has quite a bit of steps, so it is not recommended to run this way. Create quite demo runs are recommended to use the interactive mode for the evaluation script, specified in the [Evaluation section](#evaluation).
 
 If this manual form wants to be used:
 
-1. Create or use an existing super peer topology file
-2. Run n amount of times of the `indexer.py` script with some specified arguments, where n is the amount of super peers in the topology file
-    * Make sure that the passed [topology file](#topology-file-format) for arg `map` for each strong peer is the same
-    * Make sure that the given arg for `port` is unique for each strong peer run, as well as is a port number specified in the topology file
-    * All of the super peers have to be initialized in relatively the same time, or the connection will timeout
-3. Wait for the strong peers to initialize
-4. Run `peer.py` any amount of times, making sure that args like `address` reference the location of any of the strong peers, and that the `port` number is unique (if multiple peers are running on the same machine)
-5. Wait for the peer to initialize, start typing and interacting with either of the strongpeer or weakpeer clis
+1. Run the `indexer.py` script with some specified arguments or a given config file
+2. Wait for the indexer to initialize
+3. Run `peer.py` any amount of times, making sure that args like `address` reference the correct indexer, and that the `port` number is unique (if multiple peers are running on the same machine)
+4. Wait for the peer to initialize, start typing and interacting with either of the indexer or peer clis
 
 A peer has its file directory specified, but the exposed directory cannot show nested directories. Also make sure that peer directories are not the same as other peers on the same machine when specifying args.
 
-#### Topology File Format
-
-The topology file is required for the super peer runs, which has the expected format of being:
-
-* Json file that is a single json array
-* Each element in the array is a json object with the components:
-  * **host**: the address for the super peer, or null for local machine
-  * **port**: the port number of the super peer
-  * **neighbors**: array of indices, where the index is the json object index position, and is also a specified neighbor
-
 ### Evaluation
 
-The `evaluation.py` script automates much of the initialization steps listed above in the [Super/Weak section](#superweak), with an assumption of the directory structure listed in the [File Structure](#file-structure) section. When ran, the folder `peers` is created and populated, which are the peer directories.
+The `evaluation.py` script automates much of the initialization steps listed above in the [Indexer/Peer section](#indexerpeer), with an assumption certain config files existing in the `configs` folder. When ran, the folder `servers` and `peers` is created and populated, which are the source peer files, and peer directories.
 
-The main purpose of this script is to time the performance of the peer-peer and peer-strongpeer communication in different configuration contexts. The process to running the evaluations is simply running the script as specified above while supplying the args.
+The main purpose of this script is to time the performance of the peer-peer and peer-indexer communication in different configuration contexts. The process to running the evaluations is simply running the script as specified above while supplying the args.
 
-This script also can be used as an entry point to run intractable runs of the peer-to-peer system, and is the recommended way to run the system. To run the intractable mode, pass the `-i` argument, which will automatically go through the initialization steps, and also create another weak peer endpoint to view the system and files.
+This script also can be used as an entry point to run intractable runs of the peer-to-peer system, and is the recommended way to run the system. To run the intractable mode, pass the `-i` argument, which will automatically go through the initialization steps, and also create another peer endpoint to view the system and files.
+
 #### Log Generation
 
 For convenience, all of the generated log files can be retested by using the bash script `eval-loop.sh`, which runs evaluations on multiple run configurations:
@@ -90,15 +77,6 @@ For convenience, all of the generated log files can be retested by using the bas
 ./scripts/eval-loop.sh
 ```
 
-#### Directory Structure
-
-Multiple extra directories were introduced for organization sake. All of the folders below are specified to be run with `evaluation.py` and can also be demos for `indexer.py` and `peer.py`:
-
-Multiple extra directories were introduced for organization sake. All of the folders below are specified to be run with `evaluation.py` and can also be demos for `indexer.py` and `peer.py`:
-
-1. **configs**: some sample configuration files for testing and evaluation
-2. **topology**: sample topology files used for testing and to generate the below output files
-
 #### Log Folder Naming Convention
 
 The naming scheme of each of the log folders in each evaluation folder indicates configuration the log was ran with:
@@ -106,7 +84,6 @@ The naming scheme of each of the log folders in each evaluation folder indicates
 ```bash
 {NUMBER_OF_PEERS}p{SIZE_OF_FILES}f
 ```
-
 
 ### Visualization/Graphing
 

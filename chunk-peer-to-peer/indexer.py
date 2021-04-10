@@ -7,13 +7,14 @@ import logging
 import socket
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Union
 
 from argparse import ArgumentParser
 from pathlib import Path
 
 from connection import (
-    File, Location, Login, Message, Procedure, Response, Request, StreamPair,
+    File, Location, Login, Message, Procedure, RequestCall, 
+    Response, Request, StreamPair,
     ainput, getpeerbystream, merge_config_args, version_check)
 
 
@@ -25,25 +26,6 @@ class PeerState:
     sender: StreamPair
     files: set[File.Data] = field(default_factory=set)
     log: logging.Logger = field(default_factory=logging.getLogger)
-
-
-
-class RequestCall:
-    """ Pending request to a given connection """
-    _conn: StreamPair
-    _args: dict[str, Any]
-
-    def __init__(self, request: Request, conn: StreamPair, **kwargs: Any):
-        self._conn = conn
-        self._args = dict(req_type=request, **kwargs)
-
-    @property
-    def conn(self):
-        return self._conn
-
-    def __call__(self):
-        """ Sends the request to the connection stream """
-        return self._conn.request(**self._args)
 
 
 
@@ -302,7 +284,7 @@ def init_log(log: str, **_):
     log_path = Path(f'./{log}').with_suffix('.log')
     log_path.parent.mkdir(exist_ok=True, parents=True)
 
-    log_settings = dict(
+    log_settings = dict[str, Union[str, int]](
         format = "%(asctime)s.%(msecs)03d:%(levelname)s:%(name)s: %(message)s",
         datefmt = "%H:%M:%S",
         level = logging.DEBUG )

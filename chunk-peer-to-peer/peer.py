@@ -12,7 +12,7 @@ import socket
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Optional, Union, cast
+from typing import Any, Optional, Union, cast
 
 from argparse import ArgumentParser
 from io import BufferedRandom
@@ -38,11 +38,10 @@ class RequestsHandler:
     """
     Synchronized handler for all received procedures from the indexer 
     """
-
     @dataclass
     class Waiter:
         """ Waiting stat for a request """
-        response: Union[Response, frozenset[File.Data], None] = None
+        result: Union[Response, frozenset[File.Data], None] = None
         num_waiters: int = 0
 
 
@@ -64,6 +63,16 @@ class RequestsHandler:
         request type, that runs until cancelled
         """
         self._conn = conn
+
+        async def got_files(files: frozenset[File.Data]):
+            """ Share file set to file waiters """
+            await self._share_result(self._files, files)
+
+        async def got_query(response: Response):
+            """ Share query response to query waiters """
+            await self._share_result(
+                self._queries[response.file.name], response)
+
         try:
             reader = self._conn.stream.reader
             while True:
@@ -71,9 +80,11 @@ class RequestsHandler:
                 request = procedure.request
 
                 if request is Request.FILES:
-                    await procedure(self._got_files)
+                    await procedure(got_files)
+
                 elif request is Request.QUERY:
-                    await procedure(self._got_hit)
+                    await procedure(got_query)
+
                 else:
                     logging.error(f'got an unknown {request=}')
 
@@ -81,26 +92,52 @@ class RequestsHandler:
             pass
 
 
-    async def _got_files(self, files: frozenset[File.Data]):
-        """ Actions for file request responses """
+    async def _share_result(
+        self,
+        waiter: Waiter,
+        result: Union[Response, frozenset[File.Data]]):
+        """ Send received response to the waiters """
         async with self._got:
-            self._files.response = files
+            waiter.result = result
             self._got.notify_all()
 
             # wait for should release the lock
-            await self._got.wait_for(lambda: self._files.num_waiters == 0)
-            self._files.response = None
+            await self._got.wait_for(lambda: waiter.num_waiters == 0)
+            waiter.result = None
 
 
-    async def _got_hit(self, response: Response):
-        """ Actions for query request responses """
-        query = self._queries[response.file.name]
+    async def _wait_for_result(
+        self,
+        waiter: Waiter,
+        request: Request,
+        *req_args: Any,
+        **req_kwargs: Any) -> Union[frozenset[File.Data], Response]:
+        """
+        Waits for a result from the indexer from a previous query; 
+        simultaneous file requests converge to the same request-and-response
+        cycle
+        """
+        if not self._conn:
+            raise aio.InvalidStateError('Indexer connection not initialized')
+
         async with self._got:
-            query.response = response
+            waiter.num_waiters += 1
+
+            if waiter.num_waiters == 1:
+                async with self._conn.access:
+                    await self._conn.stream.request(
+                        request, *req_args, **req_kwargs)
+
+            await self._got.wait_for(lambda: waiter.result is not None)
+
+            # guaranteed to not be None
+            result = cast(
+                Union[frozenset[File.Data], Response], waiter.result)
+
+            waiter.num_waiters -= 1
             self._got.notify_all()
 
-            await self._got.wait_for(lambda: query.num_waiters == 0)
-            query.response = None
+            return result
 
 
     async def wait_for_files(self) -> frozenset[File.Data]:
@@ -108,57 +145,21 @@ class RequestsHandler:
         Sends and then waits for a file request response; simultaneous 
         file requests converge to the same request-and-response cycle
         """
-        if not self._conn:
-            raise aio.InvalidStateError('Indexer connection not initialized')
+        logging.info('waiting for files')
+        files = await self._wait_for_result(self._files, Request.FILES)
 
-        filewait = self._files
-        async with self._got:
-            filewait.num_waiters += 1
-
-            # make sure only one active request
-            if self._files.num_waiters == 1:
-                async with self._conn.access:
-                    await self._conn.stream.request(Request.FILES)
-
-                    logging.info('sent request for files')
-
-            await self._got.wait_for(lambda: filewait.response is not None) 
-
-            # guaranteed not be None and a frozenset
-            files = cast(frozenset[File.Data], filewait.response)
-            filewait.num_waiters -= 1
-            self._got.notify_all()
-
-            return files
+        return cast(frozenset[File.Data], files)
 
 
-    async def wait_for_query(self, file: File.Data) -> Response:
+    async def wait_for_response(self, file: File.Data) -> Response:
         """
-        Sends and then waits for a query request response for the given file;
-        a new request is only sent to the indexer if new_req is True
+        Sends and then waits for a query request response for the given file
         """
-        if not self._conn:
-            raise aio.InvalidStateError('Indexer connection not initialized')
+        logging.info(f'waiting for {file.name}')
+        response = await self._wait_for_result(
+            self._queries[file.name], Request.QUERY, file=file)
 
-        waiter = self._queries[file.name]
-        async with self._got:
-            waiter.num_waiters += 1
-
-            if waiter.num_waiters == 1:
-                async with self._conn.access:
-                    await self._conn.stream.request(Request.QUERY, file=file)
-
-                    logging.info(f'sent request for {file.name}')
-
-            await self._got.wait_for(lambda: waiter.response is not None)                    
-
-            response = cast(Response, waiter.response)
-            logging.info(f'got result for {file.name}')
-
-            waiter.num_waiters -= 1
-            self._got.notify_all()
-
-            return response
+        return cast(Response, response)
 
 
 
@@ -415,6 +416,46 @@ class Peer:
         """
         Queries the indexer, prompts the user, then fetches file from peer
         """
+        try:
+            picked = await self._run_selection()
+            response = await self._get_response(picked)
+
+            filepath = self._new_download_path(response)
+            read_amt = response.file.size
+
+            # make size the same as response
+            with open(filepath, 'xb') as f:
+                f.truncate(response.file.size)
+
+            logging.info(f'downloading {picked.name} to {filepath.name}')
+            start_time = time()
+
+            try:
+                await self._download_to_path(filepath, response)
+                read_amt = filepath.stat().st_size
+
+                print(f'Download for {picked.name} succeeded')
+                self._dir_update.set()
+
+            except Exception as e:
+                os.remove(filepath)
+                raise e
+
+            finally:
+                elapsed = time() - start_time
+                logging.info(
+                    f'{picked.name} downloaded {(read_amt / 1000):.2f} KB '
+                    f'in {elapsed:.4f} secs')
+
+        except Exception as e:
+            logging.error(e)
+
+
+
+    async def _run_selection(self) -> File.Data:
+        """
+        Get all possible files and select one of the files for downloading
+        """
         logging.debug('getting download options')
 
         start_time = time()
@@ -426,69 +467,15 @@ class Peer:
 
         if not files:
             print('There are no files that can be downloaded')
-            return
+            raise RuntimeError('no files can be downloaded')
 
         picked = await self._select_file(files)
 
         if not picked:
             print('invalid file entered')
-            return
+            raise RuntimeError('invalid file selected')
 
-        start_time = time()
-        response = await self._requests.wait_for_query(picked)
-        elapsed = time() - start_time
-
-        logging.info(f"query {picked} took {elapsed:.4f} secs")
-
-        self_loc = Location(socket.gethostname(), self._port)
-        other_loc = frozenset(
-            loc for loc in response.locations if loc != self_loc)
-
-        if not other_loc:
-            print(f'Cannot find download target for {picked.name}')
-            logging.error(f"location for {picked} is only self")
-            return
-
-        response = Response(response.file, other_loc)
-        filepath = self._new_download_path(response)
-        target_map = self._split_to_chunks(response)
-
-        # make size the same as response
-        with open(filepath, 'xb') as f:
-            f.truncate(response.file.size)
-
-        logging.info(f'downloading {picked.name} to {filepath.name}')
-
-        downloads = [
-            self._peer_download(filepath, target, *chunks)
-            for target, chunks in target_map.items() ]
-
-        start_time = time()
-        results = await aio.gather(*downloads, return_exceptions=True)
-        elapsed = time() - start_time
-
-        excepts = [e for e in results if isinstance(e, Exception)]
-
-        if excepts:
-            os.remove(filepath)
-            print('Ran into an issue while downloading')
-            logging.error(f'download for {picked.name} failed')
-            return
-
-        read_amt = filepath.stat().st_size
-        logging.info(
-            f'{picked.name} downloaded {(read_amt / 1000):.2f} KB '
-            f'in {elapsed:.4f} secs')
-
-        if not self._checksum_passed(filepath, results):
-            os.remove(filepath)
-            logging.error('checksum failed')
-            return
-
-        logging.info('checksum passed')
-        print(f'Download for {picked.name} succeeded')
-        self._dir_update.set()
-
+        return picked
 
 
     async def _select_file(
@@ -513,6 +500,24 @@ class Peer:
         else:
             return None
 
+
+    async def _get_response(self, picked: File.Data) -> Response:
+        """ Gets response info for a given file data """
+        start_time = time()
+        response = await self._requests.wait_for_response(picked)
+        elapsed = time() - start_time
+
+        logging.info(f"query {picked} took {elapsed:.4f} secs")
+
+        self_loc = Location(socket.gethostname(), self._port)
+        other_loc = frozenset(
+            loc for loc in response.locations if loc != self_loc)
+
+        if not other_loc:
+            print(f'Cannot find download target for {picked.name}')
+            raise RuntimeError(f"location for {picked} is only self")
+
+        return Response(response.file, other_loc)
 
 
     def _new_download_path(self, response: Response) -> Path:
@@ -539,10 +544,34 @@ class Peer:
         return filepath
 
 
+
     @staticmethod
     def _chunk_number(chunk: File.Chunk):
         """ The order number of chunk with respect to target file """
         return chunk.offset // Peer.CHUNK_SIZE
+
+
+    async def _download_to_path(self, filepath: Path, response: Response):
+        """
+        Connects to the peers in response, and download the information to 
+        the filepath
+        """
+        target_map = self._split_to_chunks(response)
+        downloads = [
+            self._peer_download(filepath, target, *chunks)
+            for target, chunks in target_map.items() ]
+
+        results = await aio.gather(*downloads, return_exceptions=True)
+        excepts = [e for e in results if isinstance(e, Exception)]
+
+        if excepts:
+            print('Ran into an issue while downloading')
+            raise RuntimeError('issue while downloading')
+
+        if not self._checksum_passed(filepath, results):
+            raise RuntimeError('checksum failed')
+
+        logging.info('checksum passed')
 
 
     def _split_to_chunks(
@@ -557,7 +586,7 @@ class Peer:
             File.Chunk(
                 name = response.file.name,
                 offset = i * Peer.CHUNK_SIZE,
-                size = Peer.CHUNK_SIZE )
+                size = Peer.CHUNK_SIZE)
             for i in range(num_chunks) ]
 
         chunks.append( # add leftover that is not a full chunk
@@ -576,6 +605,26 @@ class Peer:
 
         return chunk_targets
 
+
+    def _checksum_passed(
+        self,
+        filepath: Path,
+        results: list[Optional[bytes]]) -> bool:
+        """ Checks if the remote checksum matches the local checksum """
+
+        checksum = [r for r in results if isinstance(r, bytes)]
+        if not checksum:
+            return False
+
+        local_checksum = hashlib.md5()
+
+        with open(filepath, 'rb') as f:
+            for line in f: local_checksum.update(line)
+
+        local_checksum = local_checksum.digest()
+        checksum = checksum[0]
+
+        return checksum == local_checksum
 
 
     async def _peer_download(
@@ -615,27 +664,6 @@ class Peer:
         except Exception as e:
             log.exception(e)
             raise e
-
-
-    def _checksum_passed(
-        self,
-        filepath: Path,
-        results: list[Optional[bytes]]) -> bool:
-        """ Checks if the remote checksum matches the local checksum """
-        checksum = [r for r in results if isinstance(r, bytes)]
-
-        if not checksum:
-            return False
-
-        local_checksum = hashlib.md5()
-
-        with open(filepath, 'rb') as f:
-            for line in f: local_checksum.update(line)
-
-        local_checksum = local_checksum.digest()
-        checksum = checksum[0]
-
-        return checksum == local_checksum
 
 
     def _check_chunks(self, target: Location, *chunks: File.Chunk):
@@ -799,7 +827,7 @@ def init_log(log: str, verbosity: int, **_):
     log_path = Path(f'./{log}').with_suffix('.log')
     log_path.parent.mkdir(exist_ok=True, parents=True)
 
-    log_settings = dict(
+    log_settings = dict[str, Union[str, int]](
         format = "%(asctime)s.%(msecs)03d:%(levelname)s:%(name)s: %(message)s",
         datefmt = "%H:%M:%S",
         level = logging.getLevelName(verbosity) )
