@@ -28,8 +28,8 @@ SERVERS = Path('servers')
 PEERS = Path('peers')
 LOGS = Path('logs')
 
-PEER = Path('peer').with_suffix('.py')
-INDEXER = Path('indexer').with_suffix('.py')
+PEER = Path('peer.py')
+INDEXER = Path('indexer.py')
 
 #endregion
 
@@ -43,12 +43,12 @@ SIZE_MAP = {
 
 
 
-def init_server(file_size: str, min_copies: int):
+def init_server_files(file_size: str, min_copies: int):
     """ 
     Standardizes file names for a server, and generates missing files
     if needed
     """
-    target_server = SERVERS.joinpath(file_size)
+    target_server = SERVERS / file_size
     target_server.mkdir(parents=True, exist_ok=True)
 
     curr_files = sorted(
@@ -72,8 +72,7 @@ def init_server(file_size: str, min_copies: int):
     poss_chars = string.ascii_letters + string.digits + ' \n'
 
     for i in range(num_files, min_copies):
-        new_file = target_server.joinpath(
-            f'{file_size}({i})').with_suffix('.txt')
+        new_file = target_server / f'{file_size}({i}).txt'
 
         with open(new_file, 'x') as f:
             # potential stack issue
@@ -108,13 +107,13 @@ class PeerRun:
             self.start_files = frozenset(
                 start_path
                 for start in starts
-                if (start_path := self.dir.joinpath(start)).exists() )
+                if (start_path := self.dir / start).exists() )
         else:
             self.start_files = frozenset(self.dir.iterdir())
 
 
 def dry_run_peers(start_loc: str, **kwargs: Any):
-    " Creates or resets directory structure with processes "
+    """ Creates or resets directory structure with processes """
     start_files: Optional[dict[str, list[str]]] = None
     if start_loc:
         try:
@@ -128,7 +127,7 @@ def dry_run_peers(start_loc: str, **kwargs: Any):
         write_to = (
             Path(start_loc)
             if start_loc else
-            PEERS.joinpath('starters'))
+            PEERS / 'starters')
 
         write_to = write_to.with_suffix('.json')
         start_files = dry_create_peers(**kwargs)
@@ -147,14 +146,14 @@ def dry_run_peers(start_loc: str, **kwargs: Any):
 
 def dry_create_peers(
     label: str, num_peers: int, file_size: str) -> dict[str, list[str]]:
-    " Sets up peer directory structure without creating the processes "
+    """ Sets up peer directory structure without creating the processes """
     src_dir = SERVERS.joinpath(file_size)
     peers = list[PeerRun]()
 
     for i in range(num_peers):
         user = f'peer{i}'
-        log = LOGS.joinpath(label, PEERS, f'{user}.log')
-        peer_dir = PEERS.joinpath(src_dir.name, str(i))
+        log = LOGS / label / PEERS / f'{user}.log'
+        peer_dir = PEERS / src_dir.name / str(i)
 
         init_peer_paths(user, log, peer_dir, src_dir)
         peers.append(PeerRun(peer_dir))
@@ -175,7 +174,7 @@ async def create_peers(
     file_size: str,
     verbosity: int) -> Sequence[PeerRun]:
     """ Creates a number of client processes """
-    src_dir = SERVERS.joinpath(file_size)
+    src_dir = SERVERS / file_size
     peers = await aio.gather(*[
         init_peer(label, i, verbosity, src_dir) for i in range(num_peers) ])
 
@@ -188,19 +187,18 @@ async def init_peer(label: str, id: int, verbosity: int, src_dir: Path) -> PeerR
     indicate that the peer is ready to take in user input
     """
     user = f'peer{id}'
-    log = LOGS.joinpath(label, PEERS, f'{user}.log')
-    peer_dir = PEERS.joinpath(src_dir.name, str(id))
-    config = CONFIGS.joinpath('eval-peer').with_suffix('.ini')
+    log = LOGS / label / PEERS / f'{user}.log'
+    peer_dir = PEERS / src_dir.name / str(id)
+    config = CONFIGS / 'eval-peer.ini'
 
     init_peer_paths(user, log, peer_dir, src_dir)
 
     peer = await aio.create_subprocess_exec(
         *shlex.split(
-            f"./{PEER} -c {config} -p {PEER_PORT_BASE + id}  "
-            f"-d \"{peer_dir}\" -u \"{user}\" -l \"{log}\" -v {verbosity}"),
-        stdin=proc.PIPE,
-        stdout=proc.PIPE
-    )
+            f'./{PEER} -c {config} -p {PEER_PORT_BASE + id} '
+            f'-d "{peer_dir}" -u "{user}" -l "{log}" -v {verbosity}'),
+        stdin = proc.PIPE,
+        stdout = proc.PIPE)
 
     if peer.stdin:
         peer.stdin.write('1\n'.encode())
@@ -232,7 +230,9 @@ def init_peer_paths(user: str, log: Path, peer_dir: Path, src_dir: Path):
 
 
 def reset_peers_path(peers: Iterable[PeerRun]):
-    """ Removes all files that are not in a peer directory start files set """
+    """ 
+    Removes all files that are not in a peer directory start files set
+    """
     # remove downloaded files during run
     for p in peers:
         new_files = set(p.dir.iterdir()) - p.start_files
@@ -245,63 +245,43 @@ def reset_peers_path(peers: Iterable[PeerRun]):
 
 
 async def run_downloads(
-    peers: Sequence[PeerRun], num_queries: int, tot_requests: int):
+    label: str, num_peers: int, file_size: str, num_requests: int):
     """
-    Passes input to the client processes to request downloads from the server
+    Creates and passes input to the to a new peer processes to 
+    request downloads from the server
     """
-    # does not account for the case where the are no files to download
-    # should not happen
-    if num_queries <= 0 or num_queries > len(peers):
-        num_queries = len(peers)
+    user = 'requester'
+    log = LOGS / label / PEERS / f'{user}.log'
+    peer_dir = PEERS  / file_size / user
+    config = CONFIGS / 'eval-peer.ini'
 
-    min_amt = min(len(p.start_files) for p in peers)
-    req_range = min_amt # file names should overlap
+    if peer_dir.exists():
+        shutil.rmtree(peer_dir)
 
-    async def request_peer(peer: PeerRun, run: int):
-        """ Request commands ran on each selected peer """
-        if peer.process is None:
-            print('no process was given')
-            return 
+    requester = await aio.create_subprocess_exec(
+        *shlex.split(
+            f'./{PEER} -c {config} -p {PEER_PORT_BASE + num_peers + 1} '
+            f'-d "{peer_dir}" -u "{user}" -l "{log}"'),
+        stdin = proc.PIPE,
+        stdout = proc.PIPE)
 
-        num_requests = (
-            tot_requests // num_queries
-            if run < num_queries else
-            tot_requests // num_queries + tot_requests % num_queries)
+    requests = [ f'2\n{i + 1}\n' for i in range(num_requests) ]
+    requests = ''.join(requests) + '\n' # last \n to exit
+    requests = requests.encode()
 
-        if req_range <= num_requests:
-            client_input = [
-                random.randint(1, req_range) for _ in range(num_requests)]
-        else:
-            client_input = random.sample(range(1, req_range), num_requests)
-
-        # print(f'input for {run} is {client_input}')
-        client_input = [f'2\n{pick}\n' for pick in client_input]
-        client_input = ''.join(client_input) + '\n' # last \n to exit
-        client_input = client_input.encode()
-
-        # peer process will end after this method call
-        # potential issue with requesting peers racing against each other
-        # TODO: think of a better solution to fix race condition
-        await peer.process.communicate(client_input)
+    await requester.communicate(requests)
 
 
-    rand_peers = random.sample(range(0, len(peers)), num_queries)
-    runs = [
-        request_peer(peers[idx], i) for i, idx in enumerate(rand_peers) ]
-
-    await aio.gather(*runs)
-
-
-
-async def interact_peer(label: str, num_peers: int, file_size: str, verbosity: int):
+async def interact_peer(
+    label: str, num_peers: int, file_size: str, verbosity: int):
     """
     Creates an extra peer that will connect to the given indexer that can 
     be interfaced with the terminal
     """
     user = 'interact'
-    log = LOGS.joinpath(label, PEERS, f'{user}.log')
-    peer_dir = PEERS.joinpath(file_size, user)
-    config = CONFIGS.joinpath('eval-peer').with_suffix('.ini')
+    log = LOGS / label / PEERS / f'{user}.log'
+    peer_dir = PEERS / file_size / user
+    config = CONFIGS / 'eval-peer.ini'
 
     if peer_dir.exists():
         shutil.rmtree(peer_dir)
@@ -309,8 +289,8 @@ async def interact_peer(label: str, num_peers: int, file_size: str, verbosity: i
     peer_dir.mkdir(parents=True)
     peer = await aio.create_subprocess_exec(
         *shlex.split(
-            f"./{PEER} -c {config}  -p {PEER_PORT_BASE + num_peers + 1} "
-            f"-d \"{peer_dir}\" -u \"{user}\" -l \"{log}\" -v {verbosity}"))
+            f'./{PEER} -c {config}  -p {PEER_PORT_BASE + num_peers + 2} '
+            f'-d "{peer_dir}" -u "{user}" -l "{log}" -v {verbosity}'))
 
     await peer.wait()
 
@@ -356,15 +336,15 @@ async def start_indexer(label: str) -> proc.Process:
     Launches the server on a separate process with the specified log and 
     directory
     """
-    config = CONFIGS.joinpath('eval-indexer').with_suffix('.ini')
-    log = LOGS.joinpath(label, f'indexer.log')
+    config = CONFIGS / 'eval-indexer.ini'
+    log = LOGS / label / f'indexer.log'
 
     # clear log content
     if log.exists():
         with open(log, 'w'): pass
 
     server = await aio.create_subprocess_exec(
-        *shlex.split(f"./{INDEXER} -c {config} -l \"{log}\""),
+        *shlex.split(f'./{INDEXER} -c {config} -l "{log}"'),
         stdin=proc.PIPE,
         stdout=proc.PIPE
     )
@@ -389,15 +369,16 @@ async def run_cycle(
     file_size: str,
     requests: int,
     min_copies: int,
-    query_peers: int,
     verbosity: int,
     interactive: bool,
     dry_run: Optional[str]):
     """
     Manages the creation, running, and killing of server and client procs
     """
-    init_server(file_size, min_copies)
+    if requests <= 0:
+        requests = min_copies
 
+    init_server_files(file_size, min_copies)
     label = f'{num_peers}p{file_size}f'
 
     if dry_run is not None:
@@ -412,8 +393,8 @@ async def run_cycle(
         # interact done first, so that peers don't end early
         if interactive:
             await interact_peer(label, num_peers, file_size, verbosity)
-
-        await aio.gather(*[ run_downloads(peers, query_peers, requests) ])
+        else:
+            await run_downloads(label, num_peers, file_size, requests)
 
     except Exception as e:
         raise e
@@ -434,8 +415,7 @@ if __name__ == "__main__":
     args.add_argument("-i", "--interactive", action='store_true', help="creates an extra interactive peer to interface with the system")
     args.add_argument("-m", "--min-copies", type=int, default=10, help="the minimum number of files per peer")
     args.add_argument("-n", "--num-peers", type=int, default=2, help="the number of concurrent clients")
-    args.add_argument("-q", "--query-peers", type=int, default=-1, help="the amount of query peers")
-    args.add_argument("-r", "--requests", type=int, default=10, help="total amount of query requests")
+    args.add_argument("-r", "--requests", type=int, default=-1, help="total amount of query requests")
     args.add_argument("-v", "--verbosity", type=int, default=10, choices=[0, 10, 20, 30, 40, 50], help="the logging verboseness, level corresponds to default levels")
     args = args.parse_args()
 

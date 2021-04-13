@@ -562,9 +562,8 @@ class Peer:
             for target, chunks in target_map.items() ]
 
         results = await aio.gather(*downloads, return_exceptions=True)
-        excepts = [e for e in results if isinstance(e, Exception)]
 
-        if excepts:
+        if any( isinstance(r, Exception) for r in results ):
             print('Ran into an issue while downloading')
             raise RuntimeError('issue while downloading')
 
@@ -687,38 +686,33 @@ class Peer:
         log: logging.Logger) -> Optional[bytes]:
         """ Send download and checksum requests to the peer connection """
 
-        first_chunk = [c for c in chunks if Peer._chunk_number(c) == 0]
-        first_chunk = bool(first_chunk)
+        chunk_nums = [Peer._chunk_number(c) for c in chunks]
 
-        if first_chunk:
+        with open(filepath, 'r+b') as f:
+            for num, chunk in zip(chunk_nums, chunks):
+                # get each chunk one by one per connection
+                start_time = time()
+                await self._receive_file_retries(f, peer, chunk)
+                elapsed = time() - start_time
+
+                log.debug(
+                    f'received chunk {num} of {filepath.name}'
+                    f'in {elapsed:.4f} secs')
+
+        if any(n == 0 for n in chunk_nums):
             checksum = await peer.request(
                 Request.CHECK,
                 filename = chunks[0].name,
                 as_type = bytes)
-        else:
-            checksum = None
 
-        with open(filepath, 'r+b') as f:
-            for chunk in chunks:
-                chunk_num = Peer._chunk_number(chunk)
-                # get each chunk one by one per connection
-                start_time = time()
-                await self._receive_file_retries(f, peer, chunk, log)
-                elapsed = time() - start_time
-
-                log.debug(
-                    f'received chunk {chunk_num} of '
-                    f'{filepath.name} in {elapsed:.4f} secs')
-
-        return checksum
+            return checksum
 
 
     async def _receive_file_retries(
         self,
         file_ptr: BufferedRandom,
         peer: StreamPair,
-        chunk: File.Chunk,
-        log: logging.Logger):
+        chunk: File.Chunk):
         """
         Runs multiple attempts to download a file from the server if on
         download failure
