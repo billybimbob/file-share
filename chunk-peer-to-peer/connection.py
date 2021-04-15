@@ -223,13 +223,13 @@ class StreamPair(NamedTuple):
 
         if receiver:
             received = await receiver(self.reader)
-            return cast(T, received) # should be the same type
+            return cast(T, received) # cast to get rid of warning
 
         elif as_type:
-            return await Message[as_type].read(self.reader)
+            return await Message[T].read(self.reader)
 
         else:
-            return cast(Any, None) # kind of hacky
+            return cast(T, None) # kind of hacky
 
 
 

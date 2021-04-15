@@ -6,6 +6,7 @@ import asyncio as aio
 import logging
 import socket
 
+from collections.abc import Set
 from dataclasses import dataclass, field
 from typing import Union
 
@@ -217,10 +218,10 @@ class Indexer:
                 RequestCall(Request.QUERY, conn, response=response))
 
 
-        async def update(files: frozenset[File.Data]):
+        async def update(files: Set[File.Data]):
             """ Actions for update requests from peers """
             peer = self._peers[login.id]
-            if peer.files == files and files:
+            if files and peer.files == files:
                 logger.error(f"received an unnecessary update")
                 return
 
@@ -305,10 +306,20 @@ if __name__ == "__main__":
     version_check()
     logging.getLogger('asyncio').setLevel(logging.WARNING)
 
-    args = ArgumentParser(description="creates and starts an indexing server node")
-    args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
-    args.add_argument("-l", "--log", default='indexer.log', help="the file to write log info to")
-    args.add_argument("-p", "--port", type=int, default=8888, help="the port to run the server on")
+    args = ArgumentParser(
+        description = 'creates and starts an indexing server node')
+
+    args.add_argument('-c', '--config',
+        help = 'base arguments on a config file, other args will be ignored')
+
+    args.add_argument('-l', '--log',
+        default = 'indexer.log',
+        help = 'the file to write log info to')
+
+    args.add_argument('-p', '--port',
+        type = int,
+        default = 8888,
+        help = 'the port to run the server on')
 
     args = args.parse_args()
     args = merge_config_args(args)

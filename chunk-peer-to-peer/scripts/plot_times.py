@@ -171,7 +171,8 @@ def parse_and_graph(
 
 
 
-def read_times(logs: Path, time_store: str, top_parent: Optional[Path]=None):
+def read_times(
+    logs: Path, time_store: str, top_parent: Optional[Path] = None):
     """ Extract the time values for a file and write them to a json """
     if top_parent is None:
         top_parent = logs
@@ -197,12 +198,28 @@ def read_times(logs: Path, time_store: str, top_parent: Optional[Path]=None):
 
     
 if __name__ == "__main__":
-    args = ArgumentParser(description="Parses logging information, and outputs to a json and graph")
-    args.add_argument("-a", "--averages", help="the json file where the average times will be recorded, default will override times arg")
-    args.add_argument("-g", "--graph", help="location where to save the graph")
-    args.add_argument("-l", "--logs", required=True, help="the location of the logs to parse and graph")
-    args.add_argument("-n", "--name", default='Average Download Times', help="the name of the graph")
-    args.add_argument("-t", "--times", default="times.json", help="the json file where the times will be recorded")
-    args = args.parse_args()
+    args = ArgumentParser(
+        description = 'Parses logging information, and outputs '
+                      'to a json and graph')
 
+    args.add_argument('-a', '--averages',
+        help = 'the json file where the average times will be '
+               'recorded, default will override times arg')
+
+    args.add_argument('-g', '--graph',
+        help = 'location where to save the graph')
+
+    args.add_argument('-l', '--logs',
+        required = True,
+        help = 'the location of the logs to parse and graph')
+
+    args.add_argument('-n', '--name',
+        default = 'Average Download Times',
+        help = 'the name of the graph')
+
+    args.add_argument('-t', '--times',
+        default = 'times.json',
+        help='the json file where the times will be recorded')
+
+    args = args.parse_args()
     parse_and_graph(**vars(args))

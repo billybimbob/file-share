@@ -836,15 +836,40 @@ if __name__ == "__main__":
     version_check()
     logging.getLogger('asyncio').setLevel(logging.WARNING)
 
-    args = ArgumentParser(description="creates a peer node")
-    args.add_argument("-a", "--address", default=None, help="ip address of the indexing server")
-    args.add_argument("-c", "--config", help="base arguments on a config file, other args will be ignored")
-    args.add_argument("-d", "--directory", default='', help="the client download folder")
-    args.add_argument("-i", "--in-port", type=int, default=8889, help="the port of the indexer")
-    args.add_argument("-l", "--log", default='weak.log', help="the file to write log info to")
-    args.add_argument("-p", "--port", type=int, default=9989, help="the port to listen for connections")
-    args.add_argument("-u", "--user", help="username of the client connecting")
-    args.add_argument("-v", "--verbosity", type=int, default=10, choices=[0, 10, 20, 30, 40, 50], help="the logging verboseness, level corresponds to default levels")
+    args = ArgumentParser(description='creates a peer node')
+
+    args.add_argument('-a', '--address',
+        help = 'ip address of the indexing server')
+
+    args.add_argument('-c', '--config',
+        help = 'base arguments on a config file, other args will be ignored')
+
+    args.add_argument('-d', '--directory',
+        default = '',
+        help = 'the client download folder')
+
+    args.add_argument('-i', '--in-port',
+        type = int,
+        default = 8889,
+        help = 'the port of the indexer')
+
+    args.add_argument('-l', '--log',
+        default = 'weak.log',
+        help = 'the file to write log info to')
+
+    args.add_argument('-p', '--port',
+        type = int,
+        default = 9989,
+        help = 'the port to listen for connections')
+
+    args.add_argument('-u', '--user',
+        help = 'username of the client connecting')
+
+    args.add_argument('-v', '--verbosity',
+        type = int,
+        choices = [0, 10, 20, 30, 40, 50],
+        default = 10,
+        help = 'the logging verboseness, level corresponds to default levels')
 
     args = args.parse_args()
     args = merge_config_args(args)

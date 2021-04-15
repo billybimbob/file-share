@@ -409,14 +409,46 @@ if __name__ == "__main__":
     if sys.version_info < (3,9):
         raise RuntimeError("Python version needs to be at least 3.9")
 
-    args = ArgumentParser(description="Runs various configurations for peer clients")
-    args.add_argument("-d", "--dry-run", nargs="?", default=None, const='', help="run peer init without starting the processes; file path can be given to reset dir files")
-    args.add_argument("-f", "--file-size", default='1m', choices=['1m'], help="the size of each file downloaded")
-    args.add_argument("-i", "--interactive", action='store_true', help="creates an extra interactive peer to interface with the system")
-    args.add_argument("-m", "--min-copies", type=int, default=10, help="the minimum number of files per peer")
-    args.add_argument("-n", "--num-peers", type=int, default=2, help="the number of concurrent clients")
-    args.add_argument("-r", "--requests", type=int, default=-1, help="total amount of query requests")
-    args.add_argument("-v", "--verbosity", type=int, default=10, choices=[0, 10, 20, 30, 40, 50], help="the logging verboseness, level corresponds to default levels")
-    args = args.parse_args()
+    args = ArgumentParser(
+        description = 'Runs various configurations for peer clients')
 
+    args.add_argument('-d', '--dry-run',
+        nargs = '?',
+        const = '',
+        help='run peer init without starting the processes; '
+             'file path can be given to reset dir files')
+
+    args.add_argument('-f', '--file-size',
+        choices = ['1m'],
+        default = '1m',
+        help = 'the size of each file downloaded')
+
+    args.add_argument('-i', '--interactive',
+        action = 'store_true',
+        help = 'creates an extra interactive peer to interface '
+               'with the system')
+
+    args.add_argument('-m', '--min-copies',
+        type = int,
+        default = 10,
+        help = 'the minimum number of files per peer')
+
+    args.add_argument('-n', '--num-peers',
+        type = int,
+        default = 2, 
+        help = 'the number of concurrent clients')
+
+    args.add_argument('-r', '--requests',
+        type = int,
+        default = -1,
+        help = 'total amount of query requests')
+
+    args.add_argument('-v', '--verbosity',
+        type = int,
+        choices = [0, 10, 20, 30, 40, 50],
+        default = 10,
+        help = 'the logging verboseness, level corresponds to '
+               'default levels')
+
+    args = args.parse_args()
     aio.run(run_cycle(**vars(args)))
